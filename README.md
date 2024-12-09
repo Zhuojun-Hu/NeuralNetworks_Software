@@ -17,7 +17,7 @@ Unified framework for the training, testing and using Machine Learning models fo
 
 # Installation
 
-Requirements can be found in requirements.txt (compute canada) or conda_requirements_cclyon (conda, cc lyon)
+Requirements can be found in requirements.txt (compute canada) or conda_requirements_cclyon.yaml (conda, cc lyon)
 The main requirements are [pytorch](pytorch.org), [numpy](numpy.org) and [hydra](hydra.cc).
 
 ```
