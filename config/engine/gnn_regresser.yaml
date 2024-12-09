@@ -5,4 +5,3 @@ _target_: watchmal.engine.regression.RegressionEngine
 # need to do it in the DataToWatchmalDict source
 # code too.
 truth_key: 'target' 
-target_names: ['energy'] # Will be use for plots

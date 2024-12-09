@@ -1,3 +1,17 @@
+
+
+### Nos trucs
+
+analysis/
+outputs/
+
+
+*.log
+*.yaml
+
+
+### Tout plein de trucs de watchmal qui servent à r pour nous mais faut garder la compatibilité 
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

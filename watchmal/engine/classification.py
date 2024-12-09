@@ -258,7 +258,7 @@ class ClassifierEngine(ReconstructionEngine):
             if forward_type == 'test': # In testing mode we also save the softmax values
                 outputs['pred'] = model_out
 
-        # metrics and potentially outputs contains tensors linked to the gradient graph (and on gpu is any) 
+        # metrics and potentially outputs contains tensors linked to the gradient graph (and on gpu if any) 
         return outputs, metrics
 
 

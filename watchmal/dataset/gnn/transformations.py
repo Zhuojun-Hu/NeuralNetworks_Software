@@ -99,14 +99,9 @@ class MapLabels(torch.nn.Module):
         self.label_set = label_set
 
     def forward(self, data):
-
-        #log.info(f"\n\nType de data : {type(data)}")
-        #log.info(f"Map - Contenant : {data.y}\n\n")
-
+        
         new_target = self.label_set.index(data.y)
         data.y = torch.tensor([new_target])
-        # print(new_target)
-        # print(data.y)
 
         return data
 

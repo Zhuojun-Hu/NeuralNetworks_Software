@@ -58,8 +58,6 @@ class RegressionEngine(ReconstructionEngine):
         )
         
 
-        #self.target_names = list(target_names) # for display purpose
-
         self.output_center = output_center # define for the cnn. No idea when it is used
         self.output_scale = output_scale   # neither why to do scaling this way
 

@@ -268,9 +268,9 @@ class ReconstructionEngine(ABC):
             self.loss = metrics['loss']
             self.backward()
 
-            # Run scheduler
-            if self.scheduler is not None:
-                self.scheduler.step()
+            # # Run scheduler # for now we decide to apply step after every epoch step (and not batch step)
+            # if self.scheduler is not None:
+            #     self.scheduler.step()
             
             # If not detaching now ( with .item() ) all the data of the epoch will be load into GPU memory
             # v.item() converts torch.tensors to python floats (and detachs + moves to cpu)
@@ -282,6 +282,7 @@ class ReconstructionEngine(ABC):
 
                 # --- Logs in wandb --- #
                 if self.wandb_run is not None:
+
                     self.wandb_run.log(
                         {'train_batch_' + k: v for k, v in outputs.items()} | 
                         {'train_batch_' + k: v for k, v in metrics.items()}
@@ -404,6 +405,7 @@ class ReconstructionEngine(ABC):
         self.optimizer.zero_grad()  # reset gradients
         self.loss.backward()        # compute the new gradients for this iteration
         self.optimizer.step()       # perform gradient descent on all the parameters of the model
+
         
     def train(self, epochs=0, val_interval=20, checkpointing=False, save_interval=None):
         """
@@ -422,6 +424,7 @@ class ReconstructionEngine(ABC):
         save_interval: int
             Number of epochs between each state save, by default don't save
         """
+        
         
         start_run_time = datetime.now()
 
@@ -465,6 +468,10 @@ class ReconstructionEngine(ABC):
                 train_loader.sampler.set_epoch(self.epoch)
           
             metrics_epoch_history = self.sub_train(train_loader, val_interval) # one train epoch.
+            
+            # Run scheduler
+            if self.scheduler is not None:
+                self.scheduler.step()
 
             epoch_end_time = datetime.now()
 
@@ -476,9 +483,15 @@ class ReconstructionEngine(ABC):
 
                 # --- Wandb logs --- #
                 if self.wandb_run is not None:
+
+                    self.wandb_run.log({'epoch': epoch}) # To monitor the number of epoch step (in the training fail in the middle of the run)                                        
                     self.wandb_run.log(
                         {'train_epoch_' + k: v for k, v in metrics_epoch_history.items()}
                     )
+
+                    if self.scheduler is not None:
+                        self.wandb_run.log({'learning_rate': self.scheduler.get_last_lr()[0]}) # Changing the optimizer might lead to a change of this line too.
+
 
                     if metrics_epoch_history['loss'] < self.best_training_loss:
                         self.best_training_loss = metrics_epoch_history['loss']

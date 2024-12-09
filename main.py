@@ -177,6 +177,7 @@ def run(rank, gpu_list, dataset, wandb_run, hydra_config, global_hydra_config):
 
         with open_dict(task_config):
 
+            print(task_config)
             # Configure data loaders
             if 'data_loaders' in task_config:
                 match hydra_config.kind:
@@ -194,10 +195,12 @@ def run(rank, gpu_list, dataset, wandb_run, hydra_config, global_hydra_config):
                         raise ValueError                    
 
             # Configure optimizers
+            #assert 'optimizers' in task_config, f"No optimizer"
+
             if 'optimizers' in task_config:
                 engine.configure_optimizers(task_config.pop("optimizers"))
             
-            # Configure scheduler
+            # Configure scheduler            
             if 'scheduler' in task_config:
                 engine.configure_scheduler(task_config.pop("scheduler"))
             
