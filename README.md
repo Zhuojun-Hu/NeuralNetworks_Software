@@ -17,13 +17,11 @@ Unified framework for the training, testing and using Machine Learning models fo
 
 # Installation
 
-Requirements can be found in requirements.txt.
+Requirements can be found in requirements.txt (compute canada) or conda_requirements_cclyon (conda, cc lyon)
 The main requirements are [pytorch](pytorch.org), [numpy](numpy.org) and [hydra](hydra.cc).
 
-To download the repository use :
-
 ```
-git clone https://github.com/WatChMaL/WatChMaL.git
+conda env create -f conda_requirements_cclyon.yaml
 ```
 
 # Usage
