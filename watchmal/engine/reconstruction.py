@@ -176,7 +176,7 @@ class ReconstructionEngine(ABC):
         #    self.data_loaders[name] = get_data_loader(self.datasets, **loader_config, is_distributed=is_distributed, seed=seed)
 
 
-    def get_reduced(self, outputs, rank, n_gpus, op=torch.distributed.ReduceOp.SUM):
+    def get_reduced(self, outputs, op=torch.distributed.ReduceOp.SUM):
         """
         Gathers metrics from multiple processes using pytorch 
         distributed operations for DistributedDataParallel
@@ -200,7 +200,7 @@ class ReconstructionEngine(ABC):
             # Reduce must be called from all the processes
             # note that only the tensor on rank 0 is modified
             # the others remain the same.
-            torch.distributed.reduce(tensor, 0, op=torch.distributed.ReduceOp.SUM) 
+            torch.distributed.reduce(tensor, 0, op=op) 
 
             if self.rank == 0:
                 # The reduce operation being a sum over all the processes, 
