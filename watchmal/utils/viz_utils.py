@@ -16,52 +16,51 @@ import matplotlib.pyplot as plt
 
 
 
-def roc_curve(wandb_run, data, targets, signal_key, folder_path, log_scale=False, plot_name='roc_curve', figsize=(10, 6)):
+def roc_curve(wandb_run, softmax_preds, targets, target_names, folder_path, log_scale=False, plot_name='roc_curve', figsize=(10, 6)):
     """
-    data (dataFrame) : contains all the model outputs for each class
-    apply_softmax_on (list[str]) : list of columns of data on which to apply the softmax 
-    signal_axis (int) : which index in apply_softmax_on should be considered as the signal
-
     folder_path (str) : Folder where to save the figure
     plot_name   (str) : Name to give to the plot when saving at folder_path & logging in wandb
-
     """
 
-    # Defining usefull variables 
-    preds = data[signal_key]
-    #label_names = np.unique(data['target_names'])
-
-    # Compute roc curves values
-    fpr, tpr, _ = metrics.roc_curve(targets, preds)
-    roc_auc = metrics.auc(fpr, tpr)
-
-    # Plots
     fig, ax = plt.subplots(figsize=figsize)
-    if log_scale:
-        # Handling of 0 values if any
-        # PROBLÈME : POURQUOI EST-CE QUE LE DEBUG COMMENT A 10e^-10 .?
-        # À GÉRER (PLUS TARD)
-        fpr = np.where(tpr <= 0, 1e-8, fpr)
-        tpr = np.where(tpr <= 0, 1e-8, tpr)
 
-        ax.set_xscale('log')
-        ax.set_yscale('log')
+    # Display performances of a random classifier
+    ax.plot([1e-4, 10], [1e-4, 10], 'k--', label='Random Guess', lw=1)
 
 
-    sub_data = pd.DataFrame({'fpr': fpr, 'tpr': tpr})
-    ax = sns.lineplot(sub_data, x='fpr', y='tpr', label=f"AUC : {roc_auc}")
-    #ax.plot(fpr, tpr, linewidth=1.5, label=f'AUC : {roc_auc}')
+    # --- Computing the ROC curves --- #
+    for i, target_name in enumerate(target_names):
+        signal_class_preds = softmax_preds[:, i]
+
+        # Compute fpr, tpr and corresponding auc
+        fpr, tpr, _ = metrics.roc_curve(targets == i, signal_class_preds)
+        roc_auc = metrics.auc(fpr, tpr)
+
+        # Plots
+        if log_scale:
+            # Handling of 0 values if any
+            fpr = np.where(fpr <= 5e-4, 5e-4, fpr)
+            tpr = np.where(tpr <= 5e-4, 5e-4, tpr)
+
+        ax.plot(fpr, tpr, label=f"Signal: {target_name}, AUC :{roc_auc:.2f}", lw=0.8)
+        ax.legend()
+
 
     # Increase appearence 
-    plt.title(f"ROC for {signal_key[-2:]} as signal")
-    
-    ax.set_xlim([1e-10, 100])  # Extend x-limits
-    ax.set_ylim([1e-10, 100])
-    ax.grid(True, which="both")
+    plt.title(f"ROC curves")
+    ax.set_xlim([1e-4, 10]) 
+    ax.set_ylim([1e-4, 10])
 
-    # plt.xlabel('False Positive Rate')
-    # plt.ylabel('True Positive Rate')
+    if log_scale:
+            ax.set_xscale('log')
+            ax.set_yscale('log')
+
+    plt.grid(True, which='both',  ls='--', lw=0.5)
+
+    plt.xlabel('Background acceptance')
+    plt.ylabel('Signal efficiency')
     plt.legend()
+    plt.tight_layout()
 
     # Save the figure
     plt.savefig(f"{folder_path}/{plot_name}.png", dpi=300)
@@ -71,6 +70,63 @@ def roc_curve(wandb_run, data, targets, signal_key, folder_path, log_scale=False
     if wandb_run is not None:
         image = plt.imread(f"{folder_path}/{plot_name}.png")
         wandb_run.log({plot_name: wandb.Image(image)})
+
+
+def zoomed_roc_curve(wandb_run, softmax_preds, targets, target_names, folder_path, log_scale=False, plot_name='roc_curve', figsize=(10, 6)):
+
+        fig, ax = plt.subplots(figsize=figsize)
+
+        # --- Computing the ROC curves --- #
+        for i, target_name in enumerate(target_names):
+            signal_index = i
+
+            signal_class_preds = softmax_preds[:, signal_index]
+
+            # Compute fpr, tpr and corresponding auc
+            fpr, tpr, _ = metrics.roc_curve(targets == signal_index, signal_class_preds)
+            roc_auc = metrics.auc(fpr, tpr)
+
+            # Plots
+            if log_scale:
+                # Handling of 0 values if any
+                fpr = np.where(fpr <= 5e-4, 5e-4, fpr)
+                tpr = np.where(tpr <= 5e-4, 5e-4, tpr)
+
+            ax.plot(fpr, tpr, label=f"Signal: {target_name}, AUC :{roc_auc:.2f}", lw=0.8)
+            ax.legend()
+
+
+        # Increase appearence 
+        plt.title(f"Zoomed ROC curves")
+        ax.set_xlim([7e-4, 2e-1]) 
+        ax.set_ylim([0.8, 1.2])
+
+        if log_scale:
+                ax.set_xscale('log')
+                ax.set_yscale('log')
+
+        plt.grid(True, which='both',  ls='--', lw=0.5)
+        plt.hlines(0.995,0, 1, colors='k', linestyles='--', lw=0.5, label="99.5% signal efficiency")
+        plt.hlines(0.99,0, 1, colors='k', linestyles='--', lw=0.5, label="99% signal efficiency")
+        plt.vlines(0.05, 0, 1, colors='k', linestyles='-', lw=0.5, label="5% acceptance")
+        plt.vlines(0.005, 0, 1, colors='k', linestyles='-', lw=0.5, label="0.5% acceptance")
+        plt.vlines(0.01, 0, 1, colors='k', linestyles='-', lw=0.5, label="1% acceptance")
+
+        plt.xlabel('Background acceptance')
+        plt.ylabel('Signal efficiency')
+
+        plt.legend()
+        plt.tight_layout()
+        
+        # Save the figure
+        plt.savefig(f"{folder_path}/{plot_name}.png", dpi=300)
+        plt.close(fig)
+
+        # Reopen the image and log to wandb
+        if wandb_run is not None:
+            image = plt.imread(f"{folder_path}/{plot_name}.png")
+            wandb_run.log({plot_name: wandb.Image(image)})
+
 
 def p_r_curve(wandb_run, data, targets, signal_key, folder_path, log_scale=False, plot_name='p_r_curve', figsize=(10, 6)):
     """
@@ -90,8 +146,8 @@ def p_r_curve(wandb_run, data, targets, signal_key, folder_path, log_scale=False
     # Plot
     fig, ax = plt.subplots(figsize=figsize) 
     if log_scale:
-        precision = np.where(precision <= 0, 1e-8, precision)
-        recall    = np.where(recall <= 0, 1e-8, recall) 
+        precision = np.where(precision <= 1e-8, 1e-8, precision)
+        recall    = np.where(recall <= 1e-8, 1e-8, recall) 
 
         ax.set_xscale('log')
         ax.set_yscale('log')
@@ -119,20 +175,17 @@ def p_r_curve(wandb_run, data, targets, signal_key, folder_path, log_scale=False
         image = plt.imread(f"{folder_path}/{plot_name}.png")
         wandb_run.log({plot_name: wandb.Image(image)})
 
-def confusion_matrix(wandb_run, data, targets, signal_key, folder_path, plot_name, threshold=None, label_names=None, figsize=(10, 6)):
 
-    preds = data[signal_key]
 
-    if threshold is None:
-        threshold = 0.5
-    
-    pred_classes = preds >= threshold
-    cm = metrics.confusion_matrix(targets, pred_classes)
-    
+
+def confusion_matrix(wandb_run, predicted_classes, targets, target_names, folder_path, plot_name, figsize=(10, 6)):
+
+    cm = metrics.confusion_matrix(targets, predicted_classes)
+
     df_cm = pd.DataFrame(
         cm,
-        index=[i for i in label_names],
-        columns=[c for c in label_names]
+        index=target_names,
+        columns=target_names
     )
 
     # Plot
@@ -276,15 +329,17 @@ def preds_targets_histogram(
 
 def count_plot(
     wandb_run,
-    data,
+    preds,
+    target_names,
     folder_path,
     plot_name,
     figsize=(10, 6)
 ):
     fig, ax = plt.subplots(figsize=figsize)
 
+    prediction_with_names = [target_names[i] for i in np.argmax(preds, axis=1)]
     # Plot
-    sns.countplot(data, ax=ax)
+    sns.countplot(prediction_with_names, ax=ax)
 
     # Save the figure
     plt.savefig(f"{folder_path}/{plot_name}.png", dpi=300)

@@ -8,7 +8,7 @@ import scipy.special as special
 from watchmal.engine.reconstruction import ReconstructionEngine
 
 from watchmal.utils.logging_utils import setup_logging
-from watchmal.utils.viz_utils import roc_curve, p_r_curve, confusion_matrix, scatplot_2d, combined_histograms_plot, histogram_2d, count_plot
+from watchmal.utils.viz_utils import roc_curve, p_r_curve, confusion_matrix, scatplot_2d, combined_histograms_plot, histogram_2d, count_plot, zoomed_roc_curve
 
 log = setup_logging(__name__)
 
@@ -87,8 +87,7 @@ class ClassifierEngine(ReconstructionEngine):
       
 
         softmax_preds = special.softmax(preds, axis=1)
-        class_preds = np.argmax(softmax_preds, axis=1)
-        pred_names = [self.target_names[i] for i in class_preds]
+        predicted_classes = np.argmax(softmax_preds, axis=1)
 
         raw_columns = ['raw_preds_' + name  for name in self.target_names]
         sft_columns = ['softmax_preds_' + name for name in self.target_names]
@@ -101,38 +100,44 @@ class ClassifierEngine(ReconstructionEngine):
             data[softmax_name] = softmax_preds[:, i]
 
 
-        raw_decision_threshold = -0.1
-        #raw_decision_threshold = data[raw_columns].mean(axis=None) # None for over all the data
-        sft_decision_threshold = data[sft_columns].mean(axis=None) # same
-
         # Caution : raw_preds is [a, b] right now, and we consider raw_preds[1] as the signal
         roc_curve(
             self.wandb_run,
-            data,
-            targets,
-            signal_key='softmax_preds_'+ self.signal_key,
+            softmax_preds=softmax_preds,
+            targets=targets,
+            target_names=self.target_names,
             folder_path=self.dump_path,
             plot_name=prefix_plot_name + '_roc_curve',
             log_scale=True,
+            figsize=(8, 8)
         )
 
-        p_r_curve(
+        zoomed_roc_curve(
             self.wandb_run,
-            data,
-            targets,
-            signal_key='softmax_preds_'+ self.signal_key,
+            softmax_preds=softmax_preds,
+            targets=targets,
+            target_names=self.target_names,
             folder_path=self.dump_path,
-            plot_name=prefix_plot_name + '_pr_curve',
             log_scale=True,
+            plot_name="zoomed_roc_curve",
+            figsize=(8, 8)
         )
+
+        # p_r_curve(
+        #     self.wandb_run,
+        #     data,
+        #     targets,
+        #     signal_key='softmax_preds_'+ self.signal_key,
+        #     folder_path=self.dump_path,
+        #     plot_name=prefix_plot_name + '_pr_curve',
+        #     log_scale=True,
+        # )
 
         confusion_matrix(
             self.wandb_run,
-            data,
-            targets,
-            label_names=self.target_names,
-            signal_key='raw_preds_' + self.signal_key,
-            threshold=raw_decision_threshold,
+            predicted_classes=predicted_classes,
+            targets=targets,
+            target_names=self.target_names,
             folder_path=self.dump_path,
             plot_name=prefix_plot_name + '_cf_matrix',
         )
@@ -179,7 +184,8 @@ class ClassifierEngine(ReconstructionEngine):
 
         count_plot(
             self.wandb_run,
-            pred_names,
+            preds,
+            self.target_names,
             folder_path=self.dump_path,
             plot_name=prefix_plot_name + 'predicted_class_countplot'
         ) # Maybe should do a dict for seaborn config

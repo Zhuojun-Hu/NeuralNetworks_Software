@@ -471,7 +471,11 @@ class ReconstructionEngine(ABC):
             
             # Run scheduler
             if self.scheduler is not None:
+                current_lr = self.scheduler.get_last_lr()
                 self.scheduler.step()
+                if ( self.scheduler.get_last_lr() != current_lr ):
+                    log.info("Applied scheduler")
+                    log.info(f"New learning rate is {self.scheduler.get_last_lr()}")
 
             epoch_end_time = datetime.now()
 
