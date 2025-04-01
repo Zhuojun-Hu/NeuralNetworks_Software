@@ -1,0 +1,6 @@
+_target_: watchmal.model.grant_gnn_validated.ResGatedGraphConvRefactored
+in_channels: 5
+kernels: [32, 32, 32]
+nb_conv_layers: 3
+nb_hidden_layers: 5
+dropout: 0.2
