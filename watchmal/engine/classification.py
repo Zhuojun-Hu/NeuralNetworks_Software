@@ -74,6 +74,7 @@ class ClassifierEngine(ReconstructionEngine):
         for trf in dataset.transform.transforms: # dataset.transform is a T.Compose() object, to access the list of transform calling .transforms is needed
             if trf.__class__.__name__ == 'MapLabels':
                 label_set = trf.label_set
+                print('yo')
                 break
         
         self.label_set = list(label_set)
@@ -85,7 +86,6 @@ class ClassifierEngine(ReconstructionEngine):
         Only rank 0 should call make_plots()
         """
       
-
         softmax_preds = special.softmax(preds, axis=1)
         predicted_classes = np.argmax(softmax_preds, axis=1)
 

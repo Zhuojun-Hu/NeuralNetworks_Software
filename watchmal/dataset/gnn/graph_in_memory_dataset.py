@@ -27,7 +27,16 @@ from watchmal.dataset.gnn import transformations
 
 
 class GraphInMemoryDataset(RootDataset, InMemoryDataset):
-    r"""" Last update of this documentation : 25/01/2024    
+    r"""" Last update of this documentation : 01/04/2025    
+
+    __The purpose of this class is only for debug with notebooks
+    inside caverns__
+    You should not use it in any config files.
+    Please refer to 
+    - dataset_from_processed (if you need to re-compute edges at training time)
+    or 
+    - light_dataset_from_processed (if you just want to load graph datasets)
+
     Args :
         graph_dataset_path: string
             Location of the .pt of PROCESSED graphs

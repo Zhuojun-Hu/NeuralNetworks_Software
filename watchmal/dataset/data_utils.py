@@ -5,12 +5,14 @@ Utils for handling creation of dataloaders
 # generic imports
 import numpy as np
 import random
+import omegaconf
 
 # hydra imports
 from hydra.utils import instantiate
 
 # torch imports
 import torch
+from torch.utils.data import ConcatDataset
 from torch.utils.data import DataLoader
 
 # pyg imports
@@ -19,6 +21,8 @@ from torch_geometric.loader import DataLoader as PyGDataLoader
 
 # WatChMaL imports
 from watchmal.dataset.samplers.samplers import DistributedSamplerWrapper
+from watchmal.dataset.gnn.pyg_concat_dataset import PyGConcatDataset
+
 from watchmal.utils.logging_utils import setup_logging
 
 log = setup_logging(__name__)
@@ -28,7 +32,7 @@ log = setup_logging(__name__)
 def get_dataset(dataset_config, transforms_config=None):
     """
     Instantiate a GraphCompose class with all the transformations passed in transforms_config
-    Then instantiate a torch_geometric Dataset
+    along with the associated dataset
     """
     transform_compose = None
 
@@ -39,12 +43,22 @@ def get_dataset(dataset_config, transforms_config=None):
             transform = instantiate(trf_config)
             transform_list.append(transform)
         
-        transform_compose = T.Compose(transform_list)
+    transform_compose = T.Compose(transform_list)
 
-    dataset = instantiate(
-        dataset_config, 
-        transform=transform_compose
-    )
+    if isinstance(dataset_config.graph_folder_path, str):
+        dataset = instantiate(dataset_config, transform=transform_compose)
+
+    elif isinstance(dataset_config.graph_folder_path, omegaconf.listconfig.ListConfig):
+        all_datasets = []
+        
+        dict_config = omegaconf.OmegaConf.to_container(dataset_config)
+        for folder_path in dict_config.pop('graph_folder_path'):
+
+            sub_dataset = instantiate(dict_config, folder_path=folder_path, transform=transform_compose)
+            sub_dataset.load(f"{sub_dataset.processed_dir}/{sub_dataset.processed_file_names[0]}")
+            all_datasets.append(sub_dataset)
+
+        dataset = PyGConcatDataset(all_datasets)
     
     return dataset
 

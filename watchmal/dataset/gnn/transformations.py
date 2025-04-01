@@ -79,7 +79,7 @@ class Normalize(torch.nn.Module):
         """
 
         #log.info(f"\n\nType de data : {type(data)}")
-        #log.info(f"Normalize - Contenant : {data.x[:5]}\n\n")
+        #log.info(f"Normalize - Contenant : {data.x[:5]}\n\n")              
         if self.feat_norm is not None:
             data.x = (data.x - self.feat_norm[1]) / (self.feat_norm[0] - self.feat_norm[1] + self.eps)
         
@@ -96,14 +96,14 @@ class MapLabels(torch.nn.Module):
     """
     def __init__(self, label_set: list):
         super().__init__()
-        self.label_set = label_set
+        self.label_set = list(label_set)
 
     def forward(self, data):
-        
         new_target = self.label_set.index(data.y)
         data.y = torch.tensor([new_target])
 
         return data
+
 
 class ConvertAndToDict(torch.nn.Module):
     """
