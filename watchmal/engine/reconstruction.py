@@ -138,7 +138,7 @@ class ReconstructionEngine(ABC):
         self.target_names = list(dataset_config.target_names)
 
         # Get the feat_norm and target_norm values for later (used when displaying data)
-        for trf in dataset.transform.transforms: # dataset.transform is a T.Compose() object, to access the list of transform calling .transforms is needed
+        for trf in dataset.transforms.transforms: # dataset.transform is a T.Compose() object, to access the list of transform calling .transforms is needed
             if trf.__class__.__name__ == 'Normalize':
                 ft_norm, target_norm = trf.feat_norm, trf.target_norm
                 break
@@ -221,6 +221,8 @@ class ReconstructionEngine(ABC):
                 Tensors are kept. (Nothing is converted via .item())
         Parameters
         ==========
+        inputs : dict or tensor. If tensor will be wrapped in a dict for compatib. purpose
+
         outputs : dict
             Dictionary containing values that are tensor outputs of a single process.
 
@@ -229,6 +231,12 @@ class ReconstructionEngine(ABC):
         global_metric_dict : dict
             Dictionary containing mean of tensor values gathered from all processes
         """
+
+        wrapped = False
+        if not isinstance(inputs, dict):
+            inputs = {'input': inputs}
+            wrapped = True
+
         output_dict = {}
         for name, tensor in inputs.items():
             
@@ -242,7 +250,8 @@ class ReconstructionEngine(ABC):
 
             output_dict[name] = tensor
         
-        return output_dict
+        output = output_dict['input'] if wrapped else output_dict
+        return output
         
 
     def sub_train(self, loader, val_interval):
@@ -671,13 +680,6 @@ class ReconstructionEngine(ABC):
             #
             to_disk_epoch_history = self.to_disk_data_reformat(**to_disk_epoch_history)
 
-            log.info(f"Starting to compute plots")
-            self.make_plots(
-                prefix_plot_name=prefix_for_plot_names,
-                targets=to_disk_epoch_history['targets'],
-                preds=to_disk_epoch_history['preds'],
-            )     
-                
             # --- Saving softmax + indices in .npy arrays --- #
             log.info("Saving the data...")
             for k, v in to_disk_epoch_history.items():
@@ -686,7 +688,15 @@ class ReconstructionEngine(ABC):
 
                 if self.wandb_run is not None:
                     wandb.save(save_path)
+            
 
+            log.info(f"Starting to compute plots")
+            self.make_plots(
+                prefix_plot_name=prefix_for_plot_names,
+                targets=to_disk_epoch_history['targets'],
+                preds=to_disk_epoch_history['preds'],
+            )     
+                
             log.info("Done")
 
 

@@ -67,12 +67,11 @@ class RegressionEngine(ReconstructionEngine):
         # Denormalizing data
         # index 0 is maximum values, index 1 is minimum
         if self.feat_norm is not None:
-            preds = self.feat_norm[1] + (self.feat_norm[0] - self.feat_norm[1]) * preds
+            preds =  self.target_norm[1] + (self.target_norm[0] - self.target_norm[1]) * preds
         
         if self.target_norm is not None:
             targets = self.target_norm[1] + (self.target_norm[0] - self.target_norm[1]) * targets
         
-
         # Plots
         for i in range(len(self.target_names)):
 
@@ -94,6 +93,9 @@ class RegressionEngine(ReconstructionEngine):
             )
 
     def to_disk_data_reformat(self, preds, targets, indices):
+
+        # Expecting (batch_size, len(target_names)) as output shape
+        # target_names enable multi-dim target supports (both classification or regression)
 
         preds = np.array(preds).reshape(-1, len(self.target_names))
         targets = np.array(targets).reshape(-1, len(self.target_names))

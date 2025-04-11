@@ -1,9 +1,14 @@
 
 
 
-from typing import List, Tuple
+from typing import List, Tuple, Union
+
+import numpy as np
 from torch.utils.data import Dataset
 
+from watchmal.utils.logging_utils import setup_logging
+
+log = setup_logging(__name__)
 
 class PyGConcatDataset(Dataset):
 
@@ -19,15 +24,29 @@ class PyGConcatDataset(Dataset):
             self._indexes.append((cumulative_index, next_cumulative_index, idx))
             cumulative_index = next_cumulative_index
 
-        print(f"Datasets summary length: {self._len}")
-        print(f"Datasets indexes: {self._indexes}")
+        log.info(f"[PygConcatDataset] Datasets summary length: {self._len}")
+        log.info(f"[PygConcatDataset] Datasets indexes: {self._indexes}")
 
-    def __getitem__(self, index: int) -> Tuple[List[int], List[int]]:
-
-        for start, stop, dataset_index in self._indexes:
-            if start <= index < stop:
-                dataset = self._datasets[dataset_index]
-                return dataset[index - start]
+    def __getitem__(self, index) -> Union[Tuple, List[Tuple]]:
+       
+        """Handle both integer and slice indexing"""
+        if isinstance(index, slice):
+            # Generate indices from slice
+            indices = range(*index.indices(len(self)))
+            return [self[i] for i in indices]
+        
+        elif isinstance(index, (int, np.integer)):
+            # Handle negative indexing
+            if index < 0:
+                index += len(self)
+            
+            for start, stop, dataset_index in self._indexes:
+                if start <= index < stop:
+                    return self._datasets[dataset_index][index - start]
+            raise IndexError(f"Index {index} out of range")
+        
+        else:
+            raise TypeError(f"Invalid index type {type(index)}")
 
     def __len__(self) -> int:
         return self._len
@@ -41,9 +60,9 @@ class PyGConcatDataset(Dataset):
         return [dataset.processed_file_names[i] for dataset in self._datasets]
 
     @property
-    def transform(self):
+    def transforms(self):
         # We consider all transforms are the same accross all datatets
         # hence the [0]
-        return self._datasets[0].transform
+        return self._datasets[0].transforms
 
 

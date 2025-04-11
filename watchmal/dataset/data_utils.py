@@ -46,7 +46,15 @@ def get_dataset(dataset_config, transforms_config=None):
     transform_compose = T.Compose(transform_list)
 
     if isinstance(dataset_config.graph_folder_path, str):
-        dataset = instantiate(dataset_config, transform=transform_compose)
+
+        # 10/04/2025 - Erwan : transforms and not transform is important here
+        # bc we are using custom self.get 
+        dict_config = omegaconf.OmegaConf.to_container(dataset_config)
+        folder_path = dict_config.pop('graph_folder_path')
+        log.info(f"Folder path : {folder_path}")
+        log.info(f"Config : {dict_config}")
+
+        dataset = instantiate(dict_config, folder_path=folder_path, transforms=transform_compose)
 
     elif isinstance(dataset_config.graph_folder_path, omegaconf.listconfig.ListConfig):
         all_datasets = []
@@ -54,8 +62,11 @@ def get_dataset(dataset_config, transforms_config=None):
         dict_config = omegaconf.OmegaConf.to_container(dataset_config)
         for folder_path in dict_config.pop('graph_folder_path'):
 
-            sub_dataset = instantiate(dict_config, folder_path=folder_path, transform=transform_compose)
-            sub_dataset.load(f"{sub_dataset.processed_dir}/{sub_dataset.processed_file_names[0]}")
+            sub_dataset = instantiate(dict_config, folder_path=folder_path, transforms=transform_compose)
+
+            # Erwan : 11/04/2025 - Pourquoi est-ce que j'avais mis le load ici et pas dans l'init
+            # de EasyInMemory ?
+            # sub_dataset.load(f"{sub_dataset.processed_dir}/{sub_dataset.processed_file_names[0]}")
             all_datasets.append(sub_dataset)
 
         dataset = PyGConcatDataset(all_datasets)

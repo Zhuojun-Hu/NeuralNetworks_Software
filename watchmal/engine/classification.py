@@ -71,10 +71,9 @@ class ClassifierEngine(ReconstructionEngine):
         self.signal_key = dataset_config.signal_key
         
         # Get the label_set
-        for trf in dataset.transform.transforms: # dataset.transform is a T.Compose() object, to access the list of transform calling .transforms is needed
+        for trf in dataset.transforms.transforms: # dataset.transform is a T.Compose() object, to access the list of transform calling .transforms is needed
             if trf.__class__.__name__ == 'MapLabels':
                 label_set = trf.label_set
-                print('yo')
                 break
         
         self.label_set = list(label_set)

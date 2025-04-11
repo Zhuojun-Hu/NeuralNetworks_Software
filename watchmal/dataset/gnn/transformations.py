@@ -50,6 +50,8 @@ class Normalize(torch.nn.Module):
             self, 
             feat_norm,
             target_norm=None, 
+            apply_log=[False],
+            target_apply_log=[False],
             eps=1e-8, 
             inplace=False        
     ):
@@ -60,7 +62,9 @@ class Normalize(torch.nn.Module):
         self.target_norm = target_norm
         self.eps         = eps
         self.inplace     = inplace
-        
+        self.apply_log   = apply_log
+        self.target_apply_log = target_apply_log
+
         # For hydra compatibility
         if isinstance(self.feat_norm, omegaconf.listconfig.ListConfig):
             self.feat_norm = OmegaConf.to_container(self.feat_norm)
@@ -76,17 +80,27 @@ class Normalize(torch.nn.Module):
     def forward(self, data):
         """
         self.feat_norm and self.target_norm must contain Tensor object
-        """
-
-        #log.info(f"\n\nType de data : {type(data)}")
-        #log.info(f"Normalize - Contenant : {data.x[:5]}\n\n")              
+        """    
+   
         if self.feat_norm is not None:
-            data.x = (data.x - self.feat_norm[1]) / (self.feat_norm[0] - self.feat_norm[1] + self.eps)
-        
+
+            for ft_index in range(data.x.size(dim=1)):
+                if self.apply_log[ft_index]:
+                    data.x[:, ft_index] = (data.x[:, ft_index].log() - self.feat_norm[1, ft_index].log()) / (self.feat_norm[0, ft_index].log() - self.feat_norm[1, ft_index].log() + self.eps)
+                else :
+                    data.x[:, ft_index] = (data.x[:, ft_index] - self.feat_norm[1, ft_index]) / (self.feat_norm[0, ft_index] - self.feat_norm[1, ft_index] + self.eps)
+
         if self.target_norm is not None:
-            data.y = (data.y - self.target_norm[1]) / (self.target_norm[0] - self.target_norm[1] + self.eps)
+            data.y = torch.squeeze(data.y) # Remove any 1d dimension of the tensor for compatibility with the way we compute normalization            
+            
+            # Erwan - To do : add support for multi dim target with log norm
+            if self.target_apply_log[0]:
+                data.y = (data.y.log() - self.target_norm[1].log()) / (self.target_norm[0].log() - self.target_norm[1].log() + self.eps)
+            else :
+                data.y = (data.y - self.target_norm[1]) / (self.target_norm[0] - self.target_norm[1] + self.eps)
 
         return data
+
 
 class MapLabels(torch.nn.Module):
     """

@@ -22,18 +22,23 @@ log = setup_logging(__name__)
 
 
 def build_dataset(config: DictConfig):
-    log.info(f"Loading the dataset..")
 
     dataset_config   = config.data # data contains .dataset and .transforms
 
+    log.info(f"Loading the dataset..")
     dataset = get_dataset(
         dataset_config.dataset.dataset_parameters, 
         dataset_config.transforms
     )
-
     log.info('Finished loading')
     log.info(f"Length of the dataset : {len(dataset)}")
+
+    log.info("Calling first graph of the dataset..")
     log.info(f"First graph of the dataset : {dataset[0]}")
+
+    # log.info("[Debug] Calling first graph again to see the transformations")
+    # log.info(f"First graph of the dataset : {dataset[0]}")
+    # log.info(f"Slice of the dataset : {dataset[:3]}")
 
     if not dataset_config.dataset.fully_processed:
         dataset.compute_edges(
@@ -41,6 +46,10 @@ def build_dataset(config: DictConfig):
         )
         log.info(f"Called compute_edges. First graph is now : {dataset[0]}\n")
 
+
+
+
+    # raise ValueError
     return dataset
 
 

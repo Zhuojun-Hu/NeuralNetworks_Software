@@ -137,7 +137,7 @@ class DatasetFromProcessed(InMemoryDataset):
     def get(self, idx):
         # Caution : 
         # The pipeline for get is : (starting at the loader)
-        # getitem (Dataset) -> get (this class) 
+        # __getitem__ (Dataset) -> get (this class) 
         # If you can super().get() in this class, it's the one from
         # InMemoryDataset, where the big Data is sliced in Data cached in _data_list.
         # then Dataset gets this data, and apply transform.
@@ -146,9 +146,9 @@ class DatasetFromProcessed(InMemoryDataset):
         # this data object will NOT have already be transformed.
         # (See torch_geometric.Data.Dataset.__getitem__() l.292 - 293)
 
-        data = super().get(idx)
         data.idx = idx # for watchmal compatibility
-
+        data = data if self.transforms is None else self.transforms(data.clone())
+        
         return data
 
     def map_labels(in_label, label_set):
