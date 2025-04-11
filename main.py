@@ -76,6 +76,9 @@ def main(hydra_config, global_hydra_config):
         wandb_run    = wandb.init(**wandb_config_from_hydra)
         wandb_config = wandb.config # get the config from the agent (if any)
         hydra_config = merge_config(hydra_config, wandb_config)
+        
+        # To load the final state of the config on wandb api
+        wandb.config.update(OmegaConf.to_container(hydra_config))
 
     else :
         wandb_run =  None
