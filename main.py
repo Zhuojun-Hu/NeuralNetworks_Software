@@ -18,12 +18,15 @@ from torch.distributed import init_process_group, destroy_process_group
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 import wandb
+import wandb.sdk.wandb_settings # threads management
 
 # generic imports
 import logging
 import os
 import pprint
 import yaml
+import time
+from datetime import datetime
 
 # Watchmal import
 from watchmal.utils.logging_utils import setup_logging
@@ -34,6 +37,22 @@ from watchmal.utils.build_utils import build_dataset, build_model, merge_config
 log = setup_logging(__name__)
 
 from hydra.utils import get_original_cwd
+
+
+sleep_time = 5
+
+# for wandb debug
+# import sys
+# import threading
+# import traceback
+# def print_wandb_threads():
+#     print("=== Active Threads ===")
+#     for thread in threading.enumerate():
+#         # if 'wandb' in thread.name.lower():
+#         print(f"Thread {thread.name} (daemon={thread.daemon}) (is_alive={thread.is_alive()})")
+#         # traceback.print_stack(sys._current_frames()[thread.ident])
+#     print("=====================")
+
 
 
 
@@ -52,6 +71,10 @@ def hydra_main(config):
     hydra_output_dir = os.getcwd()
 
     # Display folders for the run
+    today = datetime.now().strftime("%A %H")
+    log.info(f"====== Welcome ! Today is {today}")
+    log.info("Launching a CAVERNS / WATCHMAL run ======\n")
+
     log.info(f"Original working directory: {original_cwd}")
     log.info(f"Hydra output directory: {hydra_output_dir}")
     #log.info(f"Global output directory for this run : {config.dump_path}")
@@ -105,7 +128,7 @@ def main(hydra_config, global_hydra_config):
             hydra_config_as_dict = OmegaConf.to_container(hydra_config, resolve=True)
             yaml.dump(hydra_config_as_dict, yaml_file, default_flow_style=False)        
 
-        wandb.save(log_config_path)
+        wandb_run.save(log_config_path)
         
 
     # Create or get the dataset (only for gnn, for cnn see run(..))
@@ -137,9 +160,17 @@ def main(hydra_config, global_hydra_config):
             nprocs=len(gpu_list), # In our case we always consider n_processes=n_gpus=len(gpu_list)
             args=(gpu_list, dataset, wandb_run, hydra_config, global_hydra_config)
         )
-
+    
+    # Erwan - trying to fix wandb sweep distributed issue
+    log.info(f"Complete end of the run.")
+    log.info(f"Congrats !")
 
 def run(rank, gpu_list, dataset, wandb_run, hydra_config, global_hydra_config):
+
+    if rank == 0 :
+        for k in list(os.environ.keys()):
+            if k.startswith('WANDB_'):
+                log.info(f"wandb env var {k}: {os.getenv(k)}")
 
     # Initialize the group and configure the log in case of distributed training
     if len(gpu_list) > 1:
@@ -150,9 +181,8 @@ def run(rank, gpu_list, dataset, wandb_run, hydra_config, global_hydra_config):
     wandb_run = wandb_run if rank == 0 else None
     log.info(f"Running worker {rank} on device : {device} with wandb_run : {wandb_run}")
     
-
     # Instantiate the model (for each process if many) 
-    torch.manual_seed(0)
+    torch.manual_seed(0) # Erwan - Not really good configuration. Anyway doesn't seems to fix any seed so far
     model, nb_params = build_model(
         model_config=hydra_config.model, 
         device=device, 
@@ -180,7 +210,7 @@ def run(rank, gpu_list, dataset, wandb_run, hydra_config, global_hydra_config):
 
         with open_dict(task_config):
 
-            print(task_config)
+            log.info(task_config)
             # Configure data loaders
             if 'data_loaders' in task_config:
                 match hydra_config.kind:
@@ -194,7 +224,7 @@ def run(rank, gpu_list, dataset, wandb_run, hydra_config, global_hydra_config):
                             task_config.pop("data_loaders"), 
                         )
                     case _:
-                        print(f"The kind parameter {hydra_config.kind} is unknown. Set it to 'cnn' or 'gnn'")
+                        log.info(f"The kind parameter {hydra_config.kind} is unknown. Set it to 'cnn' or 'gnn'")
                         raise ValueError                    
 
             # Configure optimizers
@@ -213,24 +243,24 @@ def run(rank, gpu_list, dataset, wandb_run, hydra_config, global_hydra_config):
 
     # Perform tasks - not very user-friendly, to be removed in the futur
     for task, task_config in hydra_config.tasks.items():
-
-        # if 'train' in task:
-        #     task = 'train'
-        # elif 'validation' in task:
-        #     task = 'validate'
-        # elif 'test' in task:
-        #     task= 'evaluate'
-        
         getattr(engine, task)(**task_config)
 
-    if wandb_run is not None:
-        wandb_run.finish()
+    if ( rank == 0 ) and ( wandb_run is not None ): # 1. First close W&B
 
-    if len(gpu_list) > 1:
+        run_id = wandb_run.id
+        log.info(f"run id : {run_id}")
+
+        log.info(f"Calling wandb.finish()")
+        time.sleep(sleep_time)                 # (s) Pause the execution of the current thread for this time
+        wandb_run.finish()             # Force clean exit (compared to no args)
+        time.sleep(sleep_time)
+        log.info(f"Done")
+
+    if len(gpu_list) > 1: # 2. Then tear down DDP
+        log.info(f"Calling destroy_process_group()")
         destroy_process_group()
-
-    
-    
+        log.info(f"Finished.")
+        # torch.cuda.empty_cache()  # Clear GPU memory
 
 
 def ddp_setup(rank, world_size, master_port: str):
@@ -249,6 +279,3 @@ def ddp_setup(rank, world_size, master_port: str):
 
 if __name__ == '__main__':
     hydra_main()
-
-
-
