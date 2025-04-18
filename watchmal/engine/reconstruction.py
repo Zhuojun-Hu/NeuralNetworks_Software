@@ -436,7 +436,6 @@ class ReconstructionEngine(ABC):
         
         
         start_run_time = datetime.now()
-
         log.info(f"Engine : {self.rank} | Dataloaders : {self.data_loaders}")
         if self.rank == 0:
             print("\n")
@@ -479,9 +478,10 @@ class ReconstructionEngine(ABC):
             metrics_epoch_history = self.sub_train(train_loader, val_interval) # one train epoch.
             
             # Run scheduler
-            if self.scheduler is not None:
+            if ( self.scheduler is not None ) and not isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
                 current_lr = self.scheduler.get_last_lr()
                 self.scheduler.step()
+                    
                 if ( self.scheduler.get_last_lr() != current_lr ):
                     log.info("Applied scheduler")
                     log.info(f"New learning rate is {self.scheduler.get_last_lr()}")
@@ -503,8 +503,10 @@ class ReconstructionEngine(ABC):
                     )
 
                     if self.scheduler is not None:
-                        self.wandb_run.log({'learning_rate': self.scheduler.get_last_lr()[0]}) # Changing the optimizer might lead to a change of this line too.
-
+                        if isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+                            self.wandb_run.log({'learning_rate': self.optimizer.param_groups[0]['lr']}) # Changing the optimizer might lead to a change of this line too.    
+                        else :
+                            self.wandb_run.log({'learning_rate': self.scheduler.get_last_lr()[0]}) # Changing the optimizer might lead to a change of this line too.
 
                     if metrics_epoch_history['loss'] < self.best_training_loss:
                         self.best_training_loss = metrics_epoch_history['loss']
@@ -521,6 +523,16 @@ class ReconstructionEngine(ABC):
             #     val_loader.sampler.set_epoch(self.epoch) # Previously +1, why?
                        
             metrics_epoch_history = self.sub_validate(val_loader, forward_type='val') # also store preds for roc etc. ?
+
+            if ( self.scheduler is not None ) and isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+
+                current_lr = self.optimizer.param_groups[0]['lr']
+                self.scheduler.step(metrics_epoch_history['loss'])
+
+                if ( self.optimizer.param_groups[0]['lr'] != current_lr ):
+                    log.info("Applied scheduler")
+                    log.info(f"New learning rate is {self.scheduler.get_last_lr()}")
+
 
             epoch_end_time = datetime.now()
 
@@ -593,12 +605,13 @@ class ReconstructionEngine(ABC):
             # evaluation loop
             start_time = datetime.now()
 
-            loader = self.data_loaders['test']            
+            loader = self.data_loaders['test']  
+            log.info(f"Engine : {self.rank} | Test Dataloader bs : {loader.batch_size}")          
             for step, eval_data in enumerate(loader):
                 
                 self.data   = eval_data['data'].to(self.device)
                 self.target = eval_data[self.truth_key].to(self.device)
-                indices     = {'indices': eval_data['indice'].to(self.device)} # Not optimal. It uses gpu memory for nothing if running on single gpu.
+                # indices     = {'indices': eval_data['indice'].to(self.device)} # Not optimal. It uses gpu memory for nothing if running on single gpu.
 
                 outputs, metrics = self.forward(forward_type='test') # will ouput loss + accuracy + softmax of the preds (for classification)
                 
@@ -612,7 +625,7 @@ class ReconstructionEngine(ABC):
                     metrics = self.get_reduced(metrics)
                     #outputs = self.get_reduced(outputs) We only wandb monitor the outputs of rank 0
                     preds   = self.get_gathered(preds)
-                    indices = self.get_gathered(indices)
+                    # indices = self.get_gathered(indices)
                     self.target = self.get_gathered(self.target)
 
                 # metrics : Detach the tensors (loss + ..) from computational graph + put them on cpu 
@@ -623,7 +636,7 @@ class ReconstructionEngine(ABC):
                 # preds : item() cannot be call on multi-dim tensors, so we .detach() and put on cpu by ourselves  
                 # we also convert to numpy array because no need to keep this data as tensors for after
                 preds   = {k: v.detach().cpu().numpy() for k, v in preds.items()}
-                indices = indices['indices'].detach().cpu().numpy()
+                # indices = indices['indices'].detach().cpu().numpy()
                 self.target = self.target.detach().cpu().numpy() # we store them for roc curve etc..
 
 
@@ -644,7 +657,7 @@ class ReconstructionEngine(ABC):
 
                     # --- Concatenating indices and softmax to prepare saving --- # 
                     to_disk_epoch_history['preds'].append(preds['pred']) 
-                    to_disk_epoch_history['indices'].append(indices)
+                    #to_disk_epoch_history['indices'].append(indices)
                     to_disk_epoch_history['targets'].append(self.target)
                     
                     # --- Display --- #
@@ -679,6 +692,7 @@ class ReconstructionEngine(ABC):
             # --- Regarding to_disk_epoch_history --- #
             #
             to_disk_epoch_history = self.to_disk_data_reformat(**to_disk_epoch_history)
+            #log.info(f"Indices after test epoch and flattening : {to_disk_epoch_history['indices']}")
 
             # --- Saving softmax + indices in .npy arrays --- #
             log.info("Saving the data...")
@@ -687,10 +701,23 @@ class ReconstructionEngine(ABC):
                 np.save(save_path, v)
 
                 if self.wandb_run is not None:
-                    wandb.save(save_path)
-            
+                    self.wandb_run.save(save_path)
 
-            log.info(f"Starting to compute plots")
+            # Saving used indices for testing (in case of drop_last = true)
+            # Erwan 18/04/2025 : 
+            # Temporary workarounda after 5h of trying to understand PyG way of mananing sampler
+            # Not sure it works for watchmal usecase
+            nb_test_datapoints = ( step + 1 ) * loader.batch_size
+            used_indices = loader.sampler.indices[:nb_test_datapoints]
+            
+            indices_save_path = self.dump_path + "indices.npy"
+            np.save(indices_save_path, used_indices)
+            
+            if self.wandb_run is not None:
+                self.wandb_run.save(indices_save_path)
+            log.info("Done")
+
+            log.info(f"Starting to compute plots..")
             self.make_plots(
                 prefix_plot_name=prefix_for_plot_names,
                 targets=to_disk_epoch_history['targets'],

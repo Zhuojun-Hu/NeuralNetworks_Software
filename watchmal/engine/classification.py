@@ -202,13 +202,16 @@ class ClassifierEngine(ReconstructionEngine):
         res = {'loss': loss, 'accuracy': accuracy}
         return res
 
-    def to_disk_data_reformat(self, preds, targets, indices):
+    def to_disk_data_reformat(self, preds, targets, indices=None):
 
         preds   = np.array(preds).reshape(-1, len(self.label_set))
         targets = np.array(targets).flatten()
-        indices = np.array(indices).flatten()
+        res = {'preds': preds,'targets': targets}
 
-        res = {'preds': preds,'targets': targets, 'indices': indices}
+        if indices is not None:
+            indices = np.array(indices).flatten()
+            res['indices'] = indices
+            
         return res
 
 
