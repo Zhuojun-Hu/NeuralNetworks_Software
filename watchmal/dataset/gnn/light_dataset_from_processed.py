@@ -53,12 +53,12 @@ class EasyInMemoryDataset(InMemoryDataset):
         # for node in range(3):
         #     log.info(f"Data.x, idx: {idx}, node: {node} : {data.x[node]}")
             
-
         data.idx = idx # for watchmal compatibility
         data = data if self.transforms is None else self.transforms(data.clone())
 
         # debug purpose
         # log.info(f"Graph [after idx & transforms] : {data}")
+
         # if isinstance(data, dict):
         #     log.info(f"Data.y, idx: {idx} : {data['data'].y}")
         #     for node in range(3):

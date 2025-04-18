@@ -29,8 +29,8 @@ class SubsetSequentialSampler(Sampler[int]):
         self.indices = indices
 
     def __iter__(self) -> Iterator[int]:
-        for i in self.indices:
-            yield i
+        for idx in self.indices:
+            yield idx
 
     def __len__(self) -> int:
         return len(self.indices)
