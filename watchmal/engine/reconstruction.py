@@ -17,6 +17,7 @@ import torch
 from torch.nn.parallel import DistributedDataParallel
 
 # WatChMaL imports
+from watchmal.dataset.samplers.samplers import SubsetSequentialSampler
 from watchmal.dataset.data_utils import get_data_loader, get_data_loader_v2, get_dataset
 from watchmal.utils.logging_utils import CSVLog, setup_logging
 
@@ -245,10 +246,13 @@ class ReconstructionEngine(ABC):
             if self.rank == 0:
                 tensor_list = [torch.zeros_like(tensor, device=self.device) for _ in range(self.n_gpus)]
                 torch.distributed.gather(tensor, gather_list=tensor_list, dst=0)
+                
+                # tensor_list now holds [tensor_from_rank0, tensor_from_rank1, …]
+                output_dict[name] = torch.cat(tensor_list, dim=0)
             else :
                 torch.distributed.gather(tensor, dst=0) 
+                output_dict[name] = None
 
-            output_dict[name] = tensor
         
         output = output_dict['input'] if wrapped else output_dict
         return output
@@ -359,21 +363,23 @@ class ReconstructionEngine(ABC):
                     metrics = self.get_reduced(metrics)
                     outputs = self.get_reduced(outputs)
 
-                    if forward_type == 'test':
+                    if forward_type == 'test': 
                         self.target = self.get_gathered(self.target)
                         preds   = self.get_gathered(preds)
                 
-                # Detaching outputs tensors ( with .item() )
-                # otherwise all the data of the epoch will be load into GPU memory
-                # v.item() converts torch.tensors to python floats (and detachs + moves to cpu)
-                metrics = {k: v.item() for k, v in metrics.items()} 
-                outputs = {k: v.item() for k, v in outputs.items()} 
-
-                if forward_type == 'test':
-                    self.target = self.target.detach().cpu().numpy() # we store them for roc curve etc..
-                    preds   = {k: v.detach().cpu().numpy() for k, v in preds.items()}
-                
+                # Output of get_gathered will be None for rank != 0
+                # So we only need to detach rank 0 tensors
                 if self.rank == 0: 
+                
+                    # Detaching outputs tensors ( with .item() )
+                    # otherwise all the data of the epoch will be load into GPU memory
+                    # v.item() converts torch.tensors to python floats (and detachs + moves to cpu)
+                    metrics = {k: v.item() for k, v in metrics.items()} 
+                    outputs = {k: v.item() for k, v in outputs.items()} 
+
+                    if forward_type == 'test':
+                        self.target = self.target.detach().cpu().numpy() # we store them for roc curve etc..
+                        preds   = {k: v.detach().cpu().numpy() for k, v in preds.items()}
 
                     # --- Storing for saving --- # 
                     if forward_type == 'test':
@@ -594,7 +600,9 @@ class ReconstructionEngine(ABC):
         if self.rank == 0:
             log.info(f"\n\nTest epoch starting.\nOutput directory: {self.dump_path}")
 
-        # Iterate over the validation set to calculate val_loss and val_acc
+        loader = self.data_loaders['test']   
+
+        # Iterate over the "test" set
         with torch.no_grad():
             
             # Set the model to evaluation mode
@@ -602,11 +610,28 @@ class ReconstructionEngine(ABC):
             metrics_epoch_history = {'loss': 0.}
             to_disk_epoch_history = {'preds': [], 'indices': [], 'targets': []} # Will be saved in numpy arrays. List seems the esiset way to this. Most efficient would be to init them as npy array the wanted size.
     
+            # Get the sampler
+            sampler = loader.sampler.sampler if self.is_distributed else loader.sampler
+            if not isinstance(sampler, SubsetSequentialSampler):
+                raise ValueError(f"For test run sampler should only be of type 'SequentialSampler', got {type(sampler)}")
+
             # evaluation loop
             start_time = datetime.now()
 
-            loader = self.data_loaders['test']  
-            log.info(f"Engine : {self.rank} | Test Dataloader bs : {loader.batch_size}")          
+            log.info(f"Sampler (global) indices    : {sampler.indices}")
+
+            log.info(f"Engine : {self.rank} | Sampler (Sub if mp) len  : {len(loader.sampler)}")
+            log.info(f"Engine : {self.rank} | Test Dataloader bs : {loader.batch_size}")   
+            log.info(f"Engine : {self.rank} | Nb steps           : {len(loader)}")
+
+            if self.is_distributed:
+                log.info(f"Engine : {self.rank} | Sub sampler indices : {loader.sampler.distributed_subsampler_indices}")
+                used_indices = loader.sampler.distributed_subsampler_indices[:(len(loader) * loader.batch_size)]
+            else :
+                used_indices = sampler.indices[:(len(loader) * loader.batch_size)]
+
+            used_indices = torch.tensor(used_indices, dtype=torch.int32).to(self.device)
+
             for step, eval_data in enumerate(loader):
                 
                 self.data   = eval_data['data'].to(self.device)
@@ -621,26 +646,29 @@ class ReconstructionEngine(ABC):
                 # We remove pred from the output dict so we can call reduce on all
                 # the other outputs related var and call gather only on the real preds
                 preds = {'pred': outputs.pop('pred')}
+
                 if self.is_distributed:
                     metrics = self.get_reduced(metrics)
-                    #outputs = self.get_reduced(outputs) We only wandb monitor the outputs of rank 0
                     preds   = self.get_gathered(preds)
-                    # indices = self.get_gathered(indices)
                     self.target = self.get_gathered(self.target)
 
-                # metrics : Detach the tensors (loss + ..) from computational graph + put them on cpu 
-                # so they become native python types (not tensors anymore)
-                metrics = {k: v.item() for k, v in metrics.items()}
-                outputs = {k: v.item() for k, v in outputs.items()} # OUTPUTS DOES NOT CONTAINS RAW_OUPUTS (it is PREDS, see the .pop above)
-
-                # preds : item() cannot be call on multi-dim tensors, so we .detach() and put on cpu by ourselves  
-                # we also convert to numpy array because no need to keep this data as tensors for after
-                preds   = {k: v.detach().cpu().numpy() for k, v in preds.items()}
-                # indices = indices['indices'].detach().cpu().numpy()
-                self.target = self.target.detach().cpu().numpy() # we store them for roc curve etc..
+                    #outputs = self.get_reduced(outputs) We only wandb monitor the outputs of rank 0
+                    # indices = self.get_gathered(indices)
 
 
                 if self.rank == 0: 
+
+                    # metrics : Detach the tensors (loss + ..) from computational graph + put them on cpu 
+                    # so they become native python types (not tensors anymore)
+                    metrics = {k: v.item() for k, v in metrics.items()}
+                    outputs = {k: v.item() for k, v in outputs.items()} # OUTPUTS DOES NOT CONTAINS RAW_OUPUTS (it is PREDS, see the .pop above)
+
+                    # preds : item() cannot be call on multi-dim tensors, so we .detach() and put on cpu by ourselves  
+                    # we also convert to numpy array because no need to keep this data as tensors for after
+                    preds   = {k: v.detach().cpu().numpy() for k, v in preds.items()}
+                    # indices = indices['indices'].detach().cpu().numpy()
+                    self.target = self.target.detach().cpu().numpy() # we store them for roc curve etc..
+                
 
                     # --- Wandb --- #
                     if ( self.wandb_run is not None ) and batch_log:
@@ -666,11 +694,19 @@ class ReconstructionEngine(ABC):
                             f"  Step {step + 1}/{len(loader)}"
                             f"  Evaluation {', '.join(f'{k}: {v:.5g}' for k, v in metrics.items())},"
                         )
-            # end of the loader loop             
+            # end of the loader loop     
         end_time = datetime.now()
         
+        # gather the indices if using mp
+        indices = self.get_gathered(used_indices) if self.is_distributed else used_indices
+        
+            
+        # log.info(f"Engine : {self.rank} | used indices : {used_indices}")
         if self.rank == 0:
-
+            
+            # log.info(f"Indices (after evaluate epoch) : {indices}")
+            to_disk_epoch_history['indices'] = indices.detach().cpu().numpy()
+            
             #
             # -- Regarding metrics_output_history --- #
             #
@@ -702,19 +738,7 @@ class ReconstructionEngine(ABC):
 
                 if self.wandb_run is not None:
                     self.wandb_run.save(save_path)
-
-            # Saving used indices for testing (in case of drop_last = true)
-            # Erwan 18/04/2025 : 
-            # Temporary workarounda after 5h of trying to understand PyG way of mananing sampler
-            # Not sure it works for watchmal usecase
-            nb_test_datapoints = ( step + 1 ) * loader.batch_size
-            used_indices = loader.sampler.indices[:nb_test_datapoints]
-            
-            indices_save_path = self.dump_path + "indices.npy"
-            np.save(indices_save_path, used_indices)
-            
-            if self.wandb_run is not None:
-                self.wandb_run.save(indices_save_path)
+        
             log.info("Done")
 
             log.info(f"Starting to compute plots..")
