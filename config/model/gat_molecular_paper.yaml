@@ -1,0 +1,6 @@
+_target_: watchmal.model.gat_molecular_paper.GraphAttentionNetwork
+hidden_channels: 64
+in_channels: 1
+num_heads: 4
+num_layers: 4
+out_channels: 1
