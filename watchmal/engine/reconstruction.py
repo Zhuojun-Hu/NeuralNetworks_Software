@@ -20,6 +20,7 @@ from torch.nn.parallel import DistributedDataParallel
 from watchmal.dataset.samplers.samplers import SubsetSequentialSampler
 from watchmal.dataset.data_utils import get_data_loader, get_data_loader_v2, get_dataset
 from watchmal.utils.logging_utils import CSVLog, setup_logging
+from watchmal.utils.early_stopping import EarlyStopping
 
 
 log = setup_logging(__name__)
@@ -94,6 +95,7 @@ class ReconstructionEngine(ABC):
         self.criterion = None
         self.optimizer = None
         self.scheduler = None
+        self.early_stopping = None
 
         # logging attributes
         #self.train_log = CSVLog(self.dump_path + f"log_train_{self.rank}.csv")
@@ -127,7 +129,10 @@ class ReconstructionEngine(ABC):
         """Instantiate a scheduler from a hydra config."""
         self.scheduler = instantiate(scheduler_config, optimizer=self.optimizer)
 
-    
+    def configure_early_stopping(self, early_stopping_config):
+        self.early_stopping = instantiate(early_stopping_config)
+
+
     def set_dataset(self, dataset, dataset_config):
         
         if self.dataset is not None:
@@ -145,8 +150,6 @@ class ReconstructionEngine(ABC):
                 break
             
         self.feat_norm, self.target_norm = ft_norm, target_norm
-
-
 
     def configure_data_loaders(self, loaders_config):
         """
@@ -272,7 +275,7 @@ class ReconstructionEngine(ABC):
             
             # Mount the batch of data to the device
             self.data = train_data['data'].to(self.device)
-            self.target = train_data[self.truth_key].to(self.device)                
+            self.target = train_data[self.truth_key].to(self.device)
             
             # Call forward: make a prediction & measure the average error using data = self.data
             outputs, metrics  = self.forward(forward_type='train')
@@ -530,6 +533,17 @@ class ReconstructionEngine(ABC):
                        
             metrics_epoch_history = self.sub_validate(val_loader, forward_type='val') # also store preds for roc etc. ?
 
+            # --- Early Stopping --- #
+            if self.early_stopping is not None:
+                stop_flag = torch.tensor(0, dtype=torch.uint8, device=self.device)
+                if self.rank == 0:
+                    self.early_stopping(metrics_epoch_history['loss'])
+                    stop_flag.fill_(int(self.early_stopping.should_stop))
+
+                if self.is_distributed:
+                        torch.distributed.broadcast(stop_flag, src=0) # rank 0 (src) pushes flag across the network of processes
+                
+            # --- Scheduler --- #
             if ( self.scheduler is not None ) and isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
 
                 current_lr = self.optimizer.param_groups[0]['lr']
@@ -547,22 +561,33 @@ class ReconstructionEngine(ABC):
                 log.info(f" -- Validation epoch completed in {epoch_end_time - epoch_start_time} | Iteration : {self.iteration}")
                 log.info(f" -- Total time since the beginning of the run : {epoch_end_time - start_run_time}")
                 log.info(f" -- Metrics over the (val) epoch {', '.join(f'{k}: {v:.5g}' for k, v in metrics_epoch_history.items())}")
-                            
+
+
                 # --- Wandb --- #
                 if self.wandb_run is not None:
                     self.wandb_run.log(
                         {'val_epoch_' + k: v for k, v in metrics_epoch_history.items()}
                     )
 
-                # Save if this is the best model so far
+                # --- Model Saving --- #
+                if checkpointing: # if checkpointing the model is saved at the end of each validation epoch
+                    self.save_state()
+                            
                 if metrics_epoch_history["loss"] < self.best_validation_loss:
                     log.info(" ... Best validation loss so far!")
                     self.best_validation_loss = metrics_epoch_history["loss"]
-
                     self.save_state(suffix="_BEST")
-                elif checkpointing:
-                    # if checkpointing = True the model is saved at the end of each validation epoch
-                    self.save_state()
+
+
+            # --- Early stopping --- #
+            if self.early_stopping is not None:
+                if stop_flag.item():
+                    if self.rank == 0:
+                        log.info("Early stopping triggered.")
+                        self.wandb_run.log({'early_stopped': True})
+                    if self.is_distributed: # Ensure we stop on all processes. Barrier has to be called from all of the network (processes)
+                        torch.distributed.barrier()
+                    break
  
     def validate(self, data_loader_name, forward_type, label_names, prefix_plot_name):
 
@@ -618,14 +643,14 @@ class ReconstructionEngine(ABC):
             # evaluation loop
             start_time = datetime.now()
 
-            log.info(f"Sampler (global) indices    : {sampler.indices}")
+            # log.info(f"Sampler (global) indices    : {sampler.indices}")
 
             log.info(f"Engine : {self.rank} | Sampler (Sub if mp) len  : {len(loader.sampler)}")
             log.info(f"Engine : {self.rank} | Test Dataloader bs : {loader.batch_size}")   
             log.info(f"Engine : {self.rank} | Nb steps           : {len(loader)}")
 
             if self.is_distributed:
-                log.info(f"Engine : {self.rank} | Sub sampler indices : {loader.sampler.distributed_subsampler_indices}")
+                # log.info(f"Engine : {self.rank} | Sub sampler indices : {loader.sampler.distributed_subsampler_indices}")
                 used_indices = loader.sampler.distributed_subsampler_indices[:(len(loader) * loader.batch_size)]
             else :
                 used_indices = sampler.indices[:(len(loader) * loader.batch_size)]
@@ -792,14 +817,18 @@ class ReconstructionEngine(ABC):
             artifact = wandb.Artifact(name=f"model-and-opti-checkpoints-{self.wandb_run.id}", type="model-and-opti")
             artifact.add_file(filename)
 
-            aliases = ['ite_' + str(self.iteration)]
-            if suffix:
-                artifact.description = f"Validation loss : {self.best_validation_loss:.4g}"
-                
-                aliases.append(suffix)
-                self.wandb_run.log({'best_val_epoch_loss': self.best_validation_loss})
+            artifact.metadata['checkpoints_dir'] = filename
 
+            aliases = ['ite_' + str(self.iteration)]
+            if suffix: # e.g. _BEST
+                aliases.append(suffix)
+
+            if suffix == "_BEST":            
+                artifact.description = f"Validation loss : {self.best_validation_loss:.4g}"
+                self.wandb_run.log({'best_val_epoch_loss': self.best_validation_loss})
+            
             self.wandb_run.log_artifact(artifact, aliases=aliases)
+
 
             log.info("Save state on wandb")
 
