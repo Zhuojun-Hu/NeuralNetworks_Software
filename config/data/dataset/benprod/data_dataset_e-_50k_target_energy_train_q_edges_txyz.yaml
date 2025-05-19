@@ -1,0 +1,44 @@
+# Note : 
+#   Config to use for a graph dataset
+#   that already has edges 
+#   (meaning : a fully processed dataset) .root -> graph -> graph with edges
+
+
+# Watchmal arguments
+# With more data in the train loader
+#split_path: /sps/t2k/eleblevec/NeuNetSoft/index_lists/e_mu_500MeV_10each_train_val_test_index_list.npz
+
+# With more data in the test loader
+split_path: /sps/t2k/eleblevec/NeuNetSoft/index_lists/taille_50_000/train28k_val35k_test47k.npz
+# split_path: /sps/t2k/eleblevec/NeuNetSoft/index_lists/taille_100_000/train50k_val65k_test96k.npz
+
+fully_processed: True
+
+# When fully processed no need to re-compute the edges
+compute_edges_parameters: null
+
+signal_key: 'e-'
+target_names: ['e-']
+
+dataset_parameters:
+
+  # --- Hydra arguments ---
+  # _target_: watchmal.dataset.gnn.dataset_from_processed.DatasetFromProcessed
+  _target_: watchmal.dataset.gnn.light_dataset_from_processed.EasyInMemoryDataset
+
+  verbose: 1
+  graph_file_names:
+    - data.pt
+
+
+  # --- Synthax matters here ---
+  # For only 1 graph dataset to load do
+  # graph_folder_path: /path/to/dataset
+  # for multiple graph to concat do 
+  # graph_folder_path:
+    # - /path/to/1
+    # - /path/to/2
+  
+  graph_folder_path: /sps/t2k/eleblevec/Datasets/graph_datasets/wcsim1.12.20_benprod/e-_50k_train_q_edges_txyz_label_energy_knn5
+
+

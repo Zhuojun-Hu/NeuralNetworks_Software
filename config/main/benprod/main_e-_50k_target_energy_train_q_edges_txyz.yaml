@@ -1,0 +1,42 @@
+master_port: 12357 # 12355 initial value
+gpu_list: [] 
+
+kind: gnn
+launch_wandb: True
+
+defaults:
+
+    # - model: resgated_1in_1out
+    # - model: resgated_1in_1out_meanpool
+    - model: gat_molecular_paper
+
+    - engine: gnn_regresser
+    - wandb: wandb_config_regression_e-_energy_gat # Will not be taken in account if launch_wandb=False
+    # - wandb: wandb_config_regression_e-_energy_resgatedconv 
+
+    - data/dataset/benprod@data.dataset: data_dataset_e-_50k_target_energy_train_q_edges_txyz
+    - data/transforms/regression@data.transforms: LogNorm_q_Norm_energy_e-
+
+    # Order of tasks matters
+    - tasks/train: task_train__graph_gpu_train_val_150epochs
+    
+    - sampler@tasks.train.data_loaders.train.sampler_config: subset_random
+    - sampler@tasks.train.data_loaders.validation.sampler_config: subset_sequential 
+    
+    # - loss@tasks.train.loss: mse
+    - loss@tasks.train.loss: relative_weighted
+
+    # - optimizers@tasks.train.optimizers: adamW
+    # - optimizers@tasks.train.optimizers: adamW_5e-4
+    - optimizers@tasks.train.optimizers: adam
+    
+    - scheduler@tasks.train.scheduler: reduce_lr_on_plateau
+    - scheduler@tasks.train.early_stopping: early_stopping
+
+    - tasks/restore_best_state: debug_restore_best_state
+
+    - tasks/evaluate: graph_no_batch_log_evaluate
+    - sampler@tasks.evaluate.data_loaders.test.sampler_config: subset_sequential
+    - loss@tasks.evaluate.loss: mse
+    
+    - _self_
