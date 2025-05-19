@@ -110,7 +110,7 @@ def main(hydra_config, global_hydra_config):
     # Display the config(s) of the run 
     # (after wandb.init() so it's stored in wandb logs)
     y = OmegaConf.to_yaml(hydra_config)
-    log.info(f"Hydra config: \n{y}\n")
+    # log.info(f"Hydra config: \n{y}\n")
 
     # Log top informations in wandb
     if wandb_run is not None :
@@ -119,7 +119,7 @@ def main(hydra_config, global_hydra_config):
             wandb_run.log({'SLURM_JOB_ID': int(os.getenv('SLURM_JOB_ID'))})
         except:
             log.info('No slurm job id')
-        log.info(f"Wandb config : \n{wandb_config}\n")
+        # log.info(f"Wandb config : \n{wandb_config}\n")
         
         # Save hydra final dictionnary as a yaml file to store 
         # it in wandb.
@@ -210,7 +210,7 @@ def run(rank, gpu_list, dataset, wandb_run, hydra_config, global_hydra_config):
 
         with open_dict(task_config):
 
-            log.info(task_config)
+            # log.info(task_config)
             # Configure data loaders
             if 'data_loaders' in task_config:
                 match hydra_config.kind:
@@ -240,6 +240,9 @@ def run(rank, gpu_list, dataset, wandb_run, hydra_config, global_hydra_config):
             # Configure loss
             if 'loss' in task_config:
                 engine.configure_loss(task_config.pop("loss"))
+
+            if 'early_stopping' in task_config:
+                engine.configure_early_stopping(task_config.pop('early_stopping'))
 
     # Perform tasks - not very user-friendly, to be removed in the futur
     for task, task_config in hydra_config.tasks.items():
