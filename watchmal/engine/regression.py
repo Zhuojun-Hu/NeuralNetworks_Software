@@ -96,12 +96,15 @@ class RegressionEngine(ReconstructionEngine):
 
         # Expecting (batch_size, len(target_names)) as output shape
         # target_names enable multi-dim target supports (both classification or regression)
-
         preds = np.array(preds).reshape(-1, len(self.target_names))
         targets = np.array(targets).reshape(-1, len(self.target_names))
-        indices = np.array(indices).flatten()
+        res = {'preds': preds,'targets': targets}
 
-        return {'preds': preds,'targets': targets, 'indices': indices}
+        if indices is not None:
+            indices = np.array(indices).flatten()
+            res['indices'] = indices
+            
+        return res
 
     def forward(self, forward_type='train'):
         """

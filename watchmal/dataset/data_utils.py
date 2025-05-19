@@ -12,7 +12,6 @@ from hydra.utils import instantiate
 
 # torch imports
 import torch
-from torch.utils.data import ConcatDataset
 from torch.utils.data import DataLoader
 
 # pyg imports
@@ -64,8 +63,7 @@ def get_dataset(dataset_config, transforms_config=None):
 
             sub_dataset = instantiate(dict_config, folder_path=folder_path, transforms=transform_compose)
 
-            # Erwan : 11/04/2025 - Pourquoi est-ce que j'avais mis le load ici et pas dans l'init
-            # de EasyInMemory ?
+            # Erwan : 11/04/2025 - Also possible to load here in case we do not want to load in EasyInMemory
             # sub_dataset.load(f"{sub_dataset.processed_dir}/{sub_dataset.processed_file_names[0]}")
             all_datasets.append(sub_dataset)
 
@@ -119,7 +117,7 @@ def get_data_loader_v2(
     # Wrappe the sampler is case of distributed training
     if is_distributed:
         ngpus = torch.distributed.get_world_size()
-        batch_size = max(int(batch_size / ngpus), 1)
+        batch_size = max(batch_size // ngpus, 1)
         sampler = DistributedSamplerWrapper(sampler=sampler, seed=seed)
 
 
