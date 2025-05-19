@@ -1,19 +1,13 @@
 
 
-entity: erwanlbv
-project: validation_christine
+entity: mathieu-ferey-laboratoire-leprince-ringuet
+project: WCTE_eVSmu_class_WCTE_uni_iso_v2
 
 tags: 
-  - e/mu 360k
+  - e/mu 100k
   - classification
   - resgated
-  - christine_model
+  - cut tests
 
-job_type: train_val
-notes:  "Reproduction avec le même batch_size et les bonnes valeurs de normalisation"
+job_type: train_val_test
 
-#"Run to observe node features (time + hits) against (time + charge)"
-#tags: 
-  # - "t_hits vs t_c"
-  # - "features: t_c"  
-  # - "edges: hits"

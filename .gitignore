@@ -131,3 +131,5 @@ __MACOSX/
 
 # wandb
 wandb_scripts/wandb
+
+sweeps/

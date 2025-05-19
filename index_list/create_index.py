@@ -5,11 +5,13 @@ import numpy as np
 ###
 ### Variables to modify
 ###
-save_file_name = "/sps/t2k/eleblevec/updated_watchmal/WatChMaL/index_list/demo_index/test_new_create_index.npz" # you have to include .npz
+save_file_name = "/sps/t2k/mferey/CAVERNS/NeuralNetworks_Software/index_list/train135k_val45k_test20k" # you have to include .npz
 keys = ['train_idxs', 'val_idxs', 'test_idxs'] # ['train_idxs', 'val_idxs', 'test_idxs']
 
+nb_events = 199918
+
 # indexs[-1] should always be < len(datasets)
-indexs = [0, 10_000, 30_000, 38800] # [train_first_index, val_first_index, test_first_index]
+indexs = [0, 135000, 180000, nb_events] # [train_first_index, val_first_index, test_first_index, nb_events]
 
 
 ###
