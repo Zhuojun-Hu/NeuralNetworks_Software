@@ -84,6 +84,10 @@ class Normalize(torch.nn.Module):
    
         if self.feat_norm is not None:
 
+            if data.x.dim() == 1:
+                data.x = torch.unsqueeze_copy(data.x, 1)
+                # print(f"Data size after unsqueeze {data.x.dim()} ; {data.x.size()}")
+
             for ft_index in range(data.x.size(dim=1)):
                 if self.apply_log[ft_index]:
                     data.x[:, ft_index] = (data.x[:, ft_index].log() - self.feat_norm[1, ft_index].log()) / (self.feat_norm[0, ft_index].log() - self.feat_norm[1, ft_index].log() + self.eps)
@@ -115,6 +119,60 @@ class MapLabels(torch.nn.Module):
     def forward(self, data):
         new_target = self.label_set.index(data.y)
         data.y = torch.tensor([new_target])
+
+        return data
+
+
+class AddFeaturesInData(torch.nn.Module):
+    def __init__(
+        self,
+        feature_names: list[str],
+        min_vals: list[float],
+        max_vals: list[float],
+        charge_index: int | None = None,
+        eps: float = 1e-10,
+    ):
+        super().__init__()
+        assert (
+            'event_total_charge' not in feature_names or charge_index is not None
+        ), "If you normalize event_total_charge you must pass a charge_index"
+
+        self.feature_names = feature_names
+        self.charge_index = charge_index
+
+        # register buffers so that .to(device) moves them automatically
+        self.register_buffer('min_vals', torch.tensor(min_vals, dtype=torch.float))
+        self.register_buffer('max_vals', torch.tensor(max_vals, dtype=torch.float))
+        
+        # precompute denominator = max – min + eps
+        self.register_buffer('denom_vals',
+                             self.max_vals - self.min_vals + eps)
+
+    def forward(self, data):
+
+        if data.x.dim() == 1:
+            data.x = data.x.unsqueeze(1)
+        
+        # grab x-device once
+        device = data.x.device
+
+        for i, name in enumerate(self.feature_names):
+            lo   = self.min_vals[i]   # already on `device`
+            rng  = self.denom_vals[i] # ditto
+
+            if name == 'n_hits':
+                # We suppose number of nodes is data.x.shape[0]
+                count = torch.tensor(data.x.size(0), device=device, dtype=torch.float)
+                value = (count - lo) / rng
+
+            elif name == 'event_total_charge':
+                charge = data.x[:, self.charge_index].sum()
+                value  = (charge - lo) / rng
+
+            else:
+                raise ValueError(f"Unknown feature {name!r}")
+
+            setattr(data, name, value)
 
         return data
 
@@ -158,6 +216,8 @@ class ConvertAndToDict(torch.nn.Module):
 
         return data_dict 
     
+
+
 class Threshold(torch.nn.Module):
 
     def __init__(self, key: str, max_thresholds: list, min_thresholds: list):
@@ -189,9 +249,3 @@ class Threshold(torch.nn.Module):
         att.clamp_(min=self.min_thresholds, max=self.max_thresholds)
 
         return data
-
-class AddPosInFeat(torch.nn.Module):
-
-    def __init__(self):
-        pass                                                                              
-        

@@ -1,0 +1,42 @@
+
+transforms:
+
+
+  AddFeaturesInData:
+  # If you use event_total_charge = True 
+  # you should call it before Normalize otherwise the 
+  # max_feat and min_feat will be wrong (not taking normalization in account)
+    _target_: watchmal.dataset.gnn.transformations.AddFeaturesInData
+    feature_names: 
+    - 'n_hits'
+    - 'event_total_charge'
+
+    charge_index: 1
+    min_vals:
+      - 3600.0
+      - 8000
+    max_vals:
+      - 120.0
+      - 50
+
+  # - Normalize - #
+  Normalize:
+    _target_: watchmal.dataset.gnn.transformations.Normalize
+      
+    apply_log: [False, False]
+    feat_norm:  
+      - [1900., 1000.]
+      - [550., 0.01]
+
+  MapLabels: # Should always be activated when performing classification, even if useless.
+    _target_: watchmal.dataset.gnn.transformations.MapLabels
+    label_set: # first to 0, 2nd to 1, ... 
+      - 13
+      - 11
+
+  # - Convert + Wrap each data to a dictionnary when called by the loaders - #
+  ConvertAndToDict:
+    _target_: watchmal.dataset.gnn.transformations.ConvertAndToDict
+
+    feature_to_type: float32
+    target_to_type: int64 

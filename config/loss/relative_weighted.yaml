@@ -1,0 +1,5 @@
+_target_: watchmal.loss.weighted_relative_loss.RelativeWeightedLoss
+
+base_criterion: 'mse'
+eps: 1e-8
+reduction: 'mean'
