@@ -17,7 +17,7 @@ data_loaders:
     pin_memory: True
     seed: 5
     num_workers: 3   
-    batch_size: 5000
+    batch_size: 500
     
   validation:
     split_key: val_idxs
@@ -26,4 +26,4 @@ data_loaders:
 
     pin_memory: True
     num_workers: 3 
-    batch_size: 1000
+    batch_size: 500
