@@ -651,9 +651,9 @@ class ReconstructionEngine(ABC):
 
             if self.is_distributed:
                 # log.info(f"Engine : {self.rank} | Sub sampler indices : {loader.sampler.distributed_subsampler_indices}")
-                used_indices = loader.sampler.distributed_subsampler_indices[:(len(loader) * loader.batch_size)]
+                used_indices = loader.sampler.distributed_subsampler_indices[:(len(loader) * loader.batch_size - 1)]
             else :
-                used_indices = sampler.indices[:(len(loader) * loader.batch_size)]
+                used_indices = sampler.indices[:(len(loader) * loader.batch_size - 1)]
 
             used_indices = torch.tensor(used_indices, dtype=torch.int32).to(self.device)
 
