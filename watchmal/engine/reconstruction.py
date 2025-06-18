@@ -709,7 +709,7 @@ class ReconstructionEngine(ABC):
         end_time = datetime.now()
         
         # # gather the indices if using mp
-        indices = self.get_gathered(used_indices) if self.is_distributed else used_indices
+        # indices = self.get_gathered(used_indices) if self.is_distributed else used_indices
         
             
         # log.info(f"Engine : {self.rank} | used indices : {used_indices}")
