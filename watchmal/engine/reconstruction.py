@@ -717,7 +717,7 @@ class ReconstructionEngine(ABC):
             
             # log.info(f"Indices (after evaluate epoch) : {indices}")
             # if usind used_indices at the beginning
-            to_disk_epoch_history['indices'] = indices.detach().cpu().numpy()
+            to_disk_epoch_history['indices'] = used_indices.detach().cpu().numpy()
             
             #
             # -- Regarding metrics_output_history --- #
