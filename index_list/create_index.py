@@ -5,13 +5,13 @@ import numpy as np
 ###
 ### Variables to modify
 ###
-save_file_name = "/sps/t2k/mferey/CAVERNS/NeuralNetworks_Software/index_list/train135k_val45k_test20k" # you have to include .npz
+save_file_name = "/sps/t2k/mferey/CAVERNS/NeuralNetworks_Software/index_list/train50k_val25k_test25k" # you have to include .npz
 keys = ['train_idxs', 'val_idxs', 'test_idxs'] # ['train_idxs', 'val_idxs', 'test_idxs']
 
-nb_events = 199918
+nb_events = 99963
 
 # indexs[-1] should always be < len(datasets)
-indexs = [0, 135000, 180000, nb_events] # [train_first_index, val_first_index, test_first_index, nb_events]
+indexs = [0, 50000, 75000, nb_events] # [train_first_index, val_first_index, test_first_index, nb_events]
 
 
 ###

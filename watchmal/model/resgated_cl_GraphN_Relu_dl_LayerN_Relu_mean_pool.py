@@ -29,11 +29,17 @@ class ResGatedConv_v3(torch.nn.Module):
         conv_in_channels: List[int],
         linear_out_features: List[int],
         dropout: float = 0.2,
+        use_nhits: bool = False,
+        use_event_total_charge: bool = False
     ) -> None:
 
         super().__init__() # If more heritage than torch.nn.Module is added, modify this according to the changes
 
+        self.use_nhits = use_nhits
+        self.use_event_total_charge = use_event_total_charge
 
+        # print(f"Use nhits : {self.use_nhits}")
+        # print(f"Use event_total_charge : {self.use_event_total_charge}")
         self.conv_layers = torch.nn.ModuleList()
         self.cl_norms = torch.nn.ModuleList()
 
@@ -44,13 +50,14 @@ class ResGatedConv_v3(torch.nn.Module):
             self.conv_layers.append(ResGatedGraphConv(in_channels, out_channels))
             self.cl_norms.append(GraphNorm(out_channels))
 
-
         self.hidden_layers = torch.nn.ModuleList()
         self.hl_norms = torch.nn.ModuleList()
 
         # Define the hidden and normalization layers
         # first_linear_in_features = 2 * conv_in_channels[-1] # Times 2 because of the torch.cat on gap and gsp
         first_linear_in_features = conv_in_channels[-1]
+        first_linear_in_features += int(self.use_nhits)
+        first_linear_in_features += int(self.use_event_total_charge)
 
         for j in range(len(linear_out_features) - 1):
             in_features  = first_linear_in_features if j == 0 else linear_out_features[j - 1]
@@ -62,10 +69,10 @@ class ResGatedConv_v3(torch.nn.Module):
         self.last_layer = Linear(linear_out_features[-2], linear_out_features[-1])
 
         self.drop = Dropout(p=dropout)
+        # self.activation_cl = ReLU()
         self.activation_cl = ReLU()
-        #self.activation_cl = torch.nn.GELU()
         self.activation_hl = ReLU()
-        #self.activation_hl = torch.nn.SiLU()
+        # self.activation_hl = torch.nn.SiLU()
         
         # DO NOT add a sigmoid layer for the output (it is handled by the loss)
         # if it's not a sigmoid then define the output activation here
@@ -75,12 +82,12 @@ class ResGatedConv_v3(torch.nn.Module):
 
     def forward(self, data: torch_geometric.data.Data) -> torch.Tensor:
         x, edge_index, batch = data.x, data.edge_index, data.batch
-
+ 
         # Apply convolutional layers
         for conv_layer, norm_layer in zip(self.conv_layers, self.cl_norms):
             x = conv_layer(x, edge_index)
-            x = norm_layer(x)
             x = self.activation_cl(x)
+            x = norm_layer(x)
             x = self.drop(x)
 
         # Global pooling 
@@ -90,15 +97,26 @@ class ResGatedConv_v3(torch.nn.Module):
         # out = torch.cat((xs_gap, xs_gsp), dim=1) # out.shape = (batch_size, 2 * conv_in_channels[-1])
         
         out = global_mean_pool(x, batch)
+        
+
+        # Add the n_hits info to the input of the mlp
+        if self.use_nhits:
+            assert hasattr(data, 'n_hits'), f"Use n_hits set to true but data has not n_hits attributs. Data : {data}"
+            nhits = data.n_hits.to(out.dtype).to(out.device).unsqueeze(1)
+            out = torch.cat([out, nhits], dim=1) 
+
+        if self.use_event_total_charge:
+            assert hasattr(data, 'event_total_charge'), f"Use event_total_charge set to true but data has not event_total_charge attributs. Data : {data}"
+            event_total_charge = data.event_total_charge.to(out.dtype).to(out.device).unsqueeze(1)
+            out = torch.cat([out, event_total_charge], dim=1)  
 
         # Apply hidden layers
         for hidden_layer, norm_layer in zip(self.hidden_layers, self.hl_norms):
             out = hidden_layer(out)
-            out = norm_layer(out)
             out = self.activation_hl(out)
+            out = norm_layer(out)
             out = self.drop(out)
-        
-
+    
         out =  self.last_layer(out)
         if self.output_activation is not None:
             out = self.output_activation(out)
