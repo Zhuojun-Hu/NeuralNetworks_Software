@@ -465,7 +465,7 @@ class ReconstructionEngine(ABC):
 
         # Watching 
         if self.wandb_run is not None:
-            self.wandb_run.watch(self.module, log='all', log_freq=val_interval * 2)
+            self.wandb_run.watch(self.module, log='all', log_freq=val_interval * 2, log_graph=True)
             self.wandb_run.log({'max_datapoints_seen': epochs * len(train_loader) * train_loader.batch_size})
 
         # global loop for multiple epochs        
@@ -618,8 +618,152 @@ class ReconstructionEngine(ABC):
             log.info(f"Validation completed in {end_time - start_time} | Iteration check : {self.iteration}")
             log.info(f"Total time since the beginning of the validation : {end_time - start_time}")
             log.info(f"Metrics over the (val) epoch {', '.join(f'{k}: {v:.5g}' for k, v in metrics_epoch_history.items())}")
-    
+
+
     def evaluate(self, prefix_for_plot_names, report_interval=20, batch_log=False):
+        """Evaluate the performance of the trained model on the test set."""
+        
+        if self.rank == 0:
+            log.info(f"\n\nTest epoch starting.\nOutput directory: {self.dump_path}")
+
+            loader = self.data_loaders['test']   
+
+            # Iterate over the "test" set
+            with torch.no_grad():
+                
+                # Set the model to evaluation mode
+                self.model.eval()
+                metrics_epoch_history = {'loss': 0.}
+                to_disk_epoch_history = {'preds': [], 'indices': [], 'targets': []} # Will be saved in numpy arrays. List seems the esiset way to this. Most efficient would be to init them as npy array the wanted size.
+        
+                # Get the sampler
+                sampler = loader.sampler.sampler if self.is_distributed else loader.sampler
+                if not isinstance(sampler, SubsetSequentialSampler):
+                    raise ValueError(f"For test run sampler should only be of type 'SequentialSampler', got {type(sampler)}")
+
+                # evaluation loop
+                start_time = datetime.now()
+
+                # log.info(f"Sampler (global) indices    : {sampler.indices}")
+
+                log.info(f"Engine : {self.rank} | Sampler (Sub if mp) len  : {len(loader.sampler)}")
+                log.info(f"Engine : {self.rank} | Test Dataloader bs : {loader.batch_size}")   
+                log.info(f"Engine : {self.rank} | Nb steps           : {len(loader)}")
+
+                # To correct the issue with PyGConcatDataset
+                used_indices = sampler.indices[:(len(loader) * loader.batch_size - 1)]
+                used_indices = torch.tensor(used_indices, dtype=torch.int32).to(self.device)
+
+                for step, eval_data in enumerate(loader):
+                    
+                    self.data   = eval_data['data'].to(self.device)
+                    self.target = eval_data[self.truth_key].to(self.device)
+                    # This way is not compatible with pygconcatdataset
+                    # indices     = {'indices': eval_data['indice'].to(self.device)} # Not optimal. It uses gpu memory for nothing if running on single gpu.
+
+                    outputs, metrics = self.forward(forward_type='test') # will ouput loss + accuracy + softmax of the preds (for classification)
+                    
+                    # In case of ddp we reduce outputs to get the global performance
+                    # Note : It is currently done at each step to optimize gpu memory usage
+                    # But this could also be perform at the end of the test epoch
+                    # We remove pred from the output dict so we can call reduce on all
+                    # the other outputs related var and call gather only on the real preds
+                    preds = {'pred': outputs.pop('pred')}
+
+                    # so they become native python types (not tensors anymore)
+                    metrics = {k: v.item() for k, v in metrics.items()}
+                    outputs = {k: v.item() for k, v in outputs.items()} # OUTPUTS DOES NOT CONTAINS RAW_OUPUTS (it is PREDS, see the .pop above)
+
+                    # preds : item() cannot be call on multi-dim tensors, so we .detach() and put on cpu by ourselves  
+                    # we also convert to numpy array because no need to keep this data as tensors for after
+                    preds   = {k: v.detach().cpu().numpy() for k, v in preds.items()}
+                    # indices = indices['indices'].detach().cpu().numpy()
+                    self.target = self.target.detach().cpu().numpy() # we store them for roc curve etc..
+                
+
+                    # --- Wandb --- #
+                    if ( self.wandb_run is not None ) and batch_log:
+                        self.wandb_run.log(
+                            {'test_batch_' + k: v for k, v in metrics.items()} |
+                            {'test_batch_' + k: v for k, v in outputs.items()}
+                        )
+
+                    # --- Storing performances --- #
+                    for k in metrics.keys():
+                        if not k in metrics_epoch_history.keys():
+                            metrics_epoch_history[k] = 0.
+                        metrics_epoch_history[k] += metrics[k]
+
+                    # --- Concatenating indices and softmax to prepare saving --- # 
+                    to_disk_epoch_history['preds'].append(preds['pred']) 
+                    # to_disk_epoch_history['indices'].append(indices)
+                    to_disk_epoch_history['targets'].append(self.target)
+                    
+                    # --- Display --- #
+                    if ( step % report_interval == 0 ):
+                        log.info(
+                            f"  Step {step + 1}/{len(loader)}"
+                            f"  Evaluation {', '.join(f'{k}: {v:.5g}' for k, v in metrics.items())},"
+                        )
+            # end of the loader loop     
+        end_time = datetime.now()
+        
+        # # gather the indices if using mp
+        indices = self.get_gathered(used_indices) if self.is_distributed else used_indices
+        
+            
+        # log.info(f"Engine : {self.rank} | used indices : {used_indices}")
+        if self.rank == 0:
+            
+            # log.info(f"Indices (after evaluate epoch) : {indices}")
+            # if usind used_indices at the beginning
+            to_disk_epoch_history['indices'] = indices.detach().cpu().numpy()
+            
+            #
+            # -- Regarding metrics_output_history --- #
+            #
+            # Compute the mean over the test epoch of each metric
+            for k in metrics_epoch_history.keys():
+                metrics_epoch_history[k] /= step + 1
+
+            # --- Logs --- #
+            log.info(f"Evaluation total time {end_time - start_time}")
+            log.info(f"Metrics over the test epoch {', '.join(f'{k}: {v:.5g}' for k, v in metrics_epoch_history.items())}")
+
+            # --- Wandb --- #
+            if self.wandb_run is not None:
+                self.wandb_run.log(
+                    {'test_epoch_' + k: v for k, v in metrics_epoch_history.items()}
+                )
+
+            #
+            # --- Regarding to_disk_epoch_history --- #
+            #
+            to_disk_epoch_history = self.to_disk_data_reformat(**to_disk_epoch_history)
+            #log.info(f"Indices after test epoch and flattening : {to_disk_epoch_history['indices']}")
+
+            # --- Saving softmax + indices in .npy arrays --- #
+            log.info("Saving the data...")
+            for k, v in to_disk_epoch_history.items():
+                save_path = self.dump_path + k + ".npy"
+                np.save(save_path, v)
+
+                if self.wandb_run is not None:
+                    self.wandb_run.save(save_path)
+        
+            log.info("Done")
+
+            log.info(f"Starting to compute plots..")
+            self.make_plots(
+                prefix_plot_name=prefix_for_plot_names,
+                targets=to_disk_epoch_history['targets'],
+                preds=to_disk_epoch_history['preds'],
+            )     
+                
+            log.info("Done")
+
+    
+    def evaluate_distrubuted_with_indices_issue(self, prefix_for_plot_names, report_interval=20, batch_log=False):
         """Evaluate the performance of the trained model on the test set."""
         
         if self.rank == 0:
@@ -651,9 +795,9 @@ class ReconstructionEngine(ABC):
 
             if self.is_distributed:
                 # log.info(f"Engine : {self.rank} | Sub sampler indices : {loader.sampler.distributed_subsampler_indices}")
-                used_indices = loader.sampler.distributed_subsampler_indices[:(len(loader) * loader.batch_size)]
+                used_indices = loader.sampler.distributed_subsampler_indices[:(len(loader) * loader.batch_size - 1)]
             else :
-                used_indices = sampler.indices[:(len(loader) * loader.batch_size)]
+                used_indices = sampler.indices[:(len(loader) * loader.batch_size - 1)]
 
             used_indices = torch.tensor(used_indices, dtype=torch.int32).to(self.device)
 
