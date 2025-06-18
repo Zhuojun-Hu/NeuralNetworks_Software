@@ -47,8 +47,6 @@ def build_dataset(config: DictConfig):
         log.info(f"Called compute_edges. First graph is now : {dataset[0]}\n")
 
 
-
-
     # raise ValueError
     return dataset
 

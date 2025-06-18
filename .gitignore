@@ -4,9 +4,11 @@
 
 analysis/
 outputs/
+launch/WCTE_*
+index_list/*.npz
 
 
-*.log
+logs/
 *.yaml
 
 
@@ -131,3 +133,5 @@ __MACOSX/
 
 # wandb
 wandb_scripts/wandb
+
+sweeps/

@@ -1,5 +1,5 @@
 
-epochs: 150
+epochs: 50
 val_interval: 75 
 # Print status on the gradient descent every val_interval step
 # + wandb global log (gradients + parameters) every 2 * val_interval
@@ -17,7 +17,7 @@ data_loaders:
     pin_memory: True
     seed: 5
     num_workers: 3   
-    batch_size: 700
+    batch_size: 1000
     
   validation:
     split_key: val_idxs
@@ -26,4 +26,4 @@ data_loaders:
 
     pin_memory: True
     num_workers: 3 
-    batch_size: 700
+    batch_size: 500
