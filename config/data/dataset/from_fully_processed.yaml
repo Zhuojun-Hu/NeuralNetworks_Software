@@ -17,7 +17,7 @@ dataset_parameters:
   _target_: watchmal.dataset.gnn.dataset_from_processed.DatasetFromProcessed
   
   # --- GraphDataset argument ---
-  graph_folder_path: /sps/t2k/eleblevec/datasets/graph_datasets/e_mu_100keach_100_1kMev_X_hits_t_Y_eventT
+  graph_folder_path: /pbs/home/m/melbaz/tests/knn_test_20
   graph_file_names:
     - data.pt
   

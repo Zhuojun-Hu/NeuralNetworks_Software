@@ -135,3 +135,8 @@ __MACOSX/
 wandb_scripts/wandb
 
 sweeps/
+
+
+# Multiring
+*.html
+bash/

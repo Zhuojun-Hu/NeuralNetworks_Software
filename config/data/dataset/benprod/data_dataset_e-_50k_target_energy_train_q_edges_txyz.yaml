@@ -9,7 +9,7 @@
 #split_path: /sps/t2k/eleblevec/NeuNetSoft/index_lists/e_mu_500MeV_10each_train_val_test_index_list.npz
 
 # With more data in the test loader
-split_path: /sps/t2k/eleblevec/NeuNetSoft/index_lists/taille_50_000/train28k_val35k_test47k.npz
+split_path: /pbs/home/m/melbaz/tests/knn_test_20/train10_val15_test20.npz
 # split_path: /sps/t2k/eleblevec/NeuNetSoft/index_lists/taille_100_000/train50k_val65k_test96k.npz
 
 fully_processed: True
@@ -39,6 +39,6 @@ dataset_parameters:
     # - /path/to/1
     # - /path/to/2
   
-  graph_folder_path: /sps/t2k/eleblevec/Datasets/graph_datasets/wcsim1.12.20_benprod/e-_50k_train_q_edges_txyz_label_energy_knn5
+  graph_folder_path: /pbs/home/m/melbaz/tests/knn_test_20
 
 
