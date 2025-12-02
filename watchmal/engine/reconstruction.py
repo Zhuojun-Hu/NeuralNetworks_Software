@@ -482,7 +482,9 @@ class ReconstructionEngine(ABC):
 
             # update seeding for distributed samplers
             if self.is_distributed:
-                train_loader.sampler.set_epoch(self.epoch)
+                sampler = getattr(train_loader, "sampler", None)
+                if sampler is not None and hasattr(sampler, "set_epoch"):
+                    sampler.set_epoch(self.epoch)
           
             metrics_epoch_history = self.sub_train(train_loader, val_interval) # one train epoch.
             

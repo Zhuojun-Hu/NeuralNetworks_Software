@@ -1,25 +1,26 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from pathlib import Path
 import os
 
 import torch
-from torch.utils.data import DataLoader, Subset
+from torch.utils.data import DataLoader, Subset, SubsetRandomSampler
 from omegaconf import OmegaConf
 import matplotlib.pyplot as plt
 
 from watchmal.engine.reconstruction import ReconstructionEngine
 from watchmal.dataset.multiring.sparse_cnn import (
-    VoxelGridConfig, HyperKSparseCNN3D, HyperKSparseCNN4D
+    VoxelGridConfig, HyperKSparseCNN3D
 )
 from watchmal.utils.logging_utils import setup_logging
 from watchmal.engine.multiring.diagnostic.diagnostic import (
     save_val_true_pred_split_html,
     collect_val_event_stats,
-    save_val_angle_loss_png,
-    save_val_energy2d_loss_png,
+    save_val_angle_loss_png,          # now plots Dice vs angle
+    save_val_energy2d_loss_png,       # now plots Dice vs energies
+    save_val_ring_count_confusion_png # NEW: confusion matrix for ring counts
 )
 
 log = setup_logging(__name__)
@@ -51,7 +52,40 @@ def _collate_sparse(samples: List[Dict[str, Any]]) -> Dict[str, Any]:
 class _LoaderCfg:
     batch_size: int = 1
     num_workers: int = 0
-    split: float = 0.9  
+    split: float = 0.9
+    # Peut être une string ("subset_random") ou un dict Hydra
+    sampler_config: Optional[Any] = None
+
+
+def _build_sampler(sampler_cfg: Optional[Any], indices: List[int]):
+    """
+    Build a torch Sampler from a sampler_config value.
+
+    Supports:
+      - "subset_random"
+      - dict with name/_name_/_target_ == "subset_random"
+    """
+    if sampler_cfg is None:
+        return None
+
+    if isinstance(sampler_cfg, str):
+        name = sampler_cfg.lower()
+    elif isinstance(sampler_cfg, dict):
+        name = (
+            sampler_cfg.get("name")
+            or sampler_cfg.get("_name_")
+            or sampler_cfg.get("_target_")
+            or ""
+        )
+        name = str(name).lower()
+    else:
+        return None
+
+    if name == "subset_random":
+        return SubsetRandomSampler(indices)
+
+    # Extend here if you add more sampler types
+    return None
 
 
 class MultiRingSegEngine(ReconstructionEngine):
@@ -59,7 +93,7 @@ class MultiRingSegEngine(ReconstructionEngine):
     Engine for multiring voxel segmentation with sparse CNNs.
     """
 
-    def __init__(self, truth_key: str = "voxel_parent_id", **kwargs):
+    def __init__(self, truth_key: str = "voxel_parent_frac", **kwargs):
         super().__init__(truth_key=truth_key, **kwargs)
 
         self.history = {
@@ -97,8 +131,8 @@ class MultiRingSegEngine(ReconstructionEngine):
         into <hydra_run_dir>/img/.
         """
         if self.rank != 0:
-            return  
-  
+            return
+
         img_dir = self._get_run_img_dir()
 
         def _save2(name: str, ytr: List[float], yva: List[float], ylabel: str):
@@ -135,7 +169,6 @@ class MultiRingSegEngine(ReconstructionEngine):
             ylabel="Dice penalty (mean per epoch)",
         )
 
-
     def configure_data_loaders(self, data_config, loaders_config):
         ds_cfg = data_config.dataset
         params = OmegaConf.to_container(ds_cfg.params, resolve=True) or {}
@@ -143,8 +176,8 @@ class MultiRingSegEngine(ReconstructionEngine):
         if "grid" in params and isinstance(params["grid"], dict):
             params["grid"] = VoxelGridConfig(**params["grid"])
 
-        variant = str(ds_cfg.variant).lower()
-        ds_cls = HyperKSparseCNN3D if variant == "3d" else HyperKSparseCNN4D
+        # Only 3D variant is used here
+        ds_cls = HyperKSparseCNN3D
         full_ds = ds_cls(**params)
 
         train_cfg = _LoaderCfg(**(loaders_config.get("train", {}) or {}))
@@ -160,13 +193,18 @@ class MultiRingSegEngine(ReconstructionEngine):
 
         d_train = Subset(full_ds, train_idx)
         d_val   = Subset(full_ds, val_idx)
-        self.val_subset = d_val 
+        self.val_subset = d_val
+
+        # Build samplers from sampler_config (no DDP-specific sampler here)
+        train_sampler = _build_sampler(train_cfg.sampler_config, train_idx)
+        val_sampler   = _build_sampler(val_cfg.sampler_config, val_idx)
 
         self.data_loaders["train"] = DataLoader(
             d_train,
             batch_size=train_cfg.batch_size,
             num_workers=train_cfg.num_workers,
-            shuffle=True,
+            shuffle=(train_sampler is None),
+            sampler=train_sampler,
             pin_memory=True,
             collate_fn=_collate_sparse,
         )
@@ -175,6 +213,7 @@ class MultiRingSegEngine(ReconstructionEngine):
             batch_size=val_cfg.batch_size or train_cfg.batch_size,
             num_workers=val_cfg.num_workers,
             shuffle=False,
+            sampler=val_sampler,
             pin_memory=True,
             collate_fn=_collate_sparse,
         )
@@ -189,24 +228,47 @@ class MultiRingSegEngine(ReconstructionEngine):
         loss_dict = self.criterion(batch=batch, out=out)
         total = loss_dict["loss"]
 
-        self.loss = total  
+        self.loss = total
 
         outputs: Dict[str, torch.Tensor] = {}
         return outputs, loss_dict
 
     def _extract_target_if_any_(self, batch: Dict[str, Any]) -> None:
-        """Build a flat target tensor from batch['meta'][b][truth_key] if available."""
+        """
+        Build a flat target tensor from batch['meta'][b][truth_key] if available.
+
+        - If truth_key == "voxel_parent_id"  -> cast to long (class indices).
+        - If truth_key == "voxel_parent_frac" -> keep as float (soft labels / fractions).
+        - Otherwise: infer from dtype (ints -> long, floats stay float).
+        """
         meta = batch.get("meta", None)
         self.target = None
+
+        def _prepare_tensor(x: torch.Tensor) -> torch.Tensor:
+            x = x.to(self.device)
+            # explicit special cases
+            if self.truth_key == "voxel_parent_id":
+                return x.long()
+            if self.truth_key == "voxel_parent_frac":
+                return x.float()
+            return x.long()
+
         if isinstance(meta, list):
             t_list = []
             for m in meta:
                 if self.truth_key in m:
-                    t_list.append(m[self.truth_key].to(self.device).long())
+                    val = m[self.truth_key]
+                    if not isinstance(val, torch.Tensor):
+                        val = torch.as_tensor(val)
+                    t_list.append(_prepare_tensor(val))
             if t_list:
                 self.target = torch.cat(t_list, dim=0)
+
         elif isinstance(meta, dict) and self.truth_key in meta:
-            self.target = meta[self.truth_key].to(self.device).long()
+            val = meta[self.truth_key]
+            if not isinstance(val, torch.Tensor):
+                val = torch.as_tensor(val)
+            self.target = _prepare_tensor(val)
 
     def sub_train(self, loader, val_interval):
         self.model.train()
@@ -254,7 +316,7 @@ class MultiRingSegEngine(ReconstructionEngine):
             for k, v in metrics_epoch_sum.items():
                 metrics_epoch_mean[k] = v / n_steps
 
-            # stor in history for plotting
+            # store in history for plotting
             self._append_epoch_history("train", metrics_epoch_mean)
 
         return metrics_epoch_mean
@@ -300,6 +362,8 @@ class MultiRingSegEngine(ReconstructionEngine):
 
             self._append_epoch_history("val", metrics_epoch_mean)
             self._plot_curves()
+
+            # --- Diagnostics: HTML + plots ---
             try:
                 img_dir = self._get_run_img_dir()
                 out_html = img_dir / "val_true_vs_pred_split.html"
@@ -308,14 +372,14 @@ class MultiRingSegEngine(ReconstructionEngine):
                     val_subset=self.val_subset,
                     device=self.device,
                     out_html_path=out_html,
-                    n_events=10,
+                    n_events=30,
                     start_at=0,
-                    max_voxels=8000,    
+                    max_voxels=8000,
                 )
                 log.info(f"Wrote event display: {out_html}")
             except Exception as e:
                 log.warning(f"Diagnostics display failed: {e}")
-            
+
             try:
                 stats = collect_val_event_stats(
                     model=self.model,
@@ -327,16 +391,18 @@ class MultiRingSegEngine(ReconstructionEngine):
                 )
 
                 img_dir = self._get_run_img_dir()
-                angle_png = img_dir / "val_loss_vs_angle.png"
-                energy_png = img_dir / "val_loss_vs_energy2d.png"
+                # Note: 'loss' in stats is now actually a Dice-based metric in [0,1]
+                angle_png  = img_dir / "val_dice_vs_angle.png"
+                energy_png = img_dir / "val_dice_vs_energy2d.png"
+                cm_png     = img_dir / "val_ring_count_confusion.png"
 
                 save_val_angle_loss_png(
                     out_path=angle_png,
                     angle_deg=stats["angle_deg"],
                     losses=stats["loss"],
-                    nbins=18,  
+                    nbins=18,
                 )
-                log.info(f"Wrote angle-loss plot: {angle_png}")
+                log.info(f"Wrote Dice-vs-angle plot: {angle_png}")
 
                 save_val_energy2d_loss_png(
                     out_path=energy_png,
@@ -346,11 +412,18 @@ class MultiRingSegEngine(ReconstructionEngine):
                     nbins_x=20,
                     nbins_y=20,
                 )
-                log.info(f"Wrote energy2D-loss plot: {energy_png}")
+                log.info(f"Wrote Dice-vs-energy2D plot: {energy_png}")
+
+                save_val_ring_count_confusion_png(
+                    out_path=cm_png,
+                    n_true_rings=stats["n_true_rings"],
+                    n_pred_rings=stats["n_pred_rings"],
+                    normalize=True,
+                )
+                log.info(f"Wrote ring-count confusion matrix: {cm_png}")
 
             except Exception as e:
-                log.warning(f"Angle/Energy diagnostics failed: {e}")
-
+                log.warning(f"Angle/Energy/Confusion diagnostics failed: {e}")
 
         return metrics_epoch_mean
 
