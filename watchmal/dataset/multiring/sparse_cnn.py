@@ -6,6 +6,7 @@ import h5py
 import numpy as np
 import torch
 from torch.utils.data import Dataset
+os.environ["SPCONV_ALGO"] = "native"
 from spconv.pytorch.utils import PointToVoxel as Point2Voxel  # type: ignore
 
 
@@ -49,15 +50,18 @@ class _BaseSparseDataset(Dataset):
     def __init__(
         self,
         base_dir: str,
-        min_charge: float = 2.5,           # now: min PE *per voxel*
+        min_charge: float = 2.5,
         grid: Optional[VoxelGridConfig] = None,
         num_batches: Optional[int] = None,
         seed: Optional[int] = None,
-        feat_norm: str = "none",           # "none" | "standard" | "minmax"
+        feat_norm: str = "none",
         feat_norm_indices: Optional[List[int]] = None,
         stats_max_events: Optional[int] = None,
         rotate_p: float = 10.0,
         max_parents: int = 3,
+        cache_in_ram: bool = False,
+        use_digit_time: bool = False,
+        true_charge_only_if_true_time_ge_digi_time: bool = False,
         **_: Any,
     ) -> None:
         super().__init__()
@@ -70,9 +74,17 @@ class _BaseSparseDataset(Dataset):
             raise ValueError("max_parents must be >= 0")
         self.rng = np.random.RandomState(seed if seed is not None else 0)
 
+        self.cache_in_ram = bool(cache_in_ram)
+        self._cache: Dict[int, Dict[str, Any]] = {}
+
+        self.use_digit_time = bool(use_digit_time)
+        self.true_charge_only_if_true_time_ge_digi_time = bool(
+            true_charge_only_if_true_time_ge_digi_time
+        )
+
         files = sorted(
             glob.glob(
-                os.path.join(self.base_dir, "**", "wcsim_output_multihit.h5"),
+                os.path.join(self.base_dir, "**", "wcsim_output_multihit_with_digit_time.h5"),
                 recursive=True,
             )
         )
@@ -99,7 +111,7 @@ class _BaseSparseDataset(Dataset):
                 self._index.append((len(self.files) - 1, e))
 
         if len(self._index) == 0:
-            raise RuntimeError(f"No events found under {base_dir}")
+            raise RuntimeError(f"No events found under {base_dir}, found {len(files)} files.")
 
         self.feat_norm = feat_norm
         self.feat_norm_idx = list(feat_norm_indices or [])
@@ -127,6 +139,9 @@ class _BaseSparseDataset(Dataset):
     def __del__(self):
         self.close()
 
+    def clear_cache(self):
+        self._cache.clear()
+
     def events_per_h5(self) -> Dict[str, int]:
         return dict(self._events_per_file)
 
@@ -140,24 +155,22 @@ class _BaseSparseDataset(Dataset):
         p0, p1 = int(part_ptr[eidx]), int(part_ptr[eidx + 1])
         return hits[h0:h1], parts[p0:p1]
 
-    # @staticmethod
-    # def _select_digihit_hits(hits) -> np.ndarray:
-    #     """
-    #     Approximate 'digihit time': keep only the earliest true hit per tube.
-    #     Returns a boolean mask over hits.
-    #     """
-    #     n = len(hits)
-    #     if n == 0:
-    #         return np.zeros((0,), dtype=bool)
-    #     tube = hits["tube_id"].astype(np.int64)
-    #     t = hits["time_ns"].astype(np.float32)
-    #     idx_time = np.argsort(t)
-    #     tube_sorted = tube[idx_time]
-    #     _, first_idx = np.unique(tube_sorted, return_index=True)
-    #     keep_idx = idx_time[first_idx]
-    #     mask = np.zeros(n, dtype=bool)
-    #     mask[keep_idx] = True
-    #     return mask
+    def _read_digi_event(self, f: h5py.File, eidx: int):
+        """
+        Optional: read digitized hits if present in the HDF5:
+          /events/digi_hit_index and /events/digi_hits
+        Returns empty array if missing.
+        """
+        try:
+            E = f["/events"]
+            if ("digi_hit_index" not in E) or ("digi_hits" not in E):
+                return np.zeros((0,), dtype=E["hits"].dtype)
+            ptr = E["digi_hit_index"]
+            digis = E["digi_hits"]
+            d0, d1 = int(ptr[eidx]), int(ptr[eidx + 1])
+            return digis[d0:d1]
+        except Exception:
+            return np.zeros((0,), dtype=np.dtype([]))
 
     @staticmethod
     def _compute_primary_groups(parts_evt) -> Tuple[List[int], Dict[int, int]]:
@@ -185,11 +198,9 @@ class _BaseSparseDataset(Dataset):
             for i, (t, p, g, e) in enumerate(zip(tid, pid, pdg, ene))
         }
 
-        # generator-level primaries
         mask = (pid == 0) & (pdg != 0) & (ene > 0)
         prim_ids = tid[mask].tolist()
 
-        # merge nearly-collinear primaries
         if have_dir and len(prim_ids) > 1:
             dirs = np.array([info[t][3] for t in prim_ids], dtype=float)
             n = np.linalg.norm(dirs, axis=1)
@@ -474,6 +485,25 @@ class _BaseSparseDataset(Dataset):
         s["min"] = np.minimum(s["min"], x.min(0))
         s["max"] = np.maximum(s["max"], x.max(0))
 
+    @staticmethod
+    def _tube_to_min_digi_time(digi_hits) -> Dict[int, float]:
+        """Map tube_id -> minimum digi time (ns) within an event."""
+        d: Dict[int, float] = {}
+        if digi_hits is None or len(digi_hits) == 0:
+            return d
+        if not (isinstance(digi_hits.dtype.names, tuple) and ("tube_id" in digi_hits.dtype.names) and ("time_ns" in digi_hits.dtype.names)):
+            return d
+        for row in digi_hits:
+            try:
+                tube = int(row["tube_id"])
+                tt = float(row["time_ns"])
+            except Exception:
+                continue
+            prev = d.get(tube)
+            if prev is None or tt < prev:
+                d[tube] = tt
+        return d
+
     def _init_feature_stats(self, stats_max_events: Optional[int]):
         N = len(self)
         take = N if (stats_max_events is None) else min(N, int(stats_max_events))
@@ -494,17 +524,38 @@ class _BaseSparseDataset(Dataset):
             hits, parts = self._read_event(f, eidx)
             if len(hits) == 0:
                 continue
-
-            # keep only earliest hit per tube (digihit-like)
-            # m_digi = self._select_digihit_hits(hits)
             hits_f = hits
             if len(hits_f) == 0:
                 continue
 
             xyz = np.stack([hits_f["x"], hits_f["y"], hits_f["z"]],
                            axis=1).astype(np.float32)
-            t = hits_f["time_ns"].astype(np.float32)
+            t_true = hits_f["time_ns"].astype(np.float32)
             q = hits_f["charge_pe"].astype(np.float32)
+
+            if self.use_digit_time or self.true_charge_only_if_true_time_ge_digi_time:
+                digi_hits = self._read_digi_event(f, eidx)
+                dmap = self._tube_to_min_digi_time(digi_hits)
+                if dmap and ("tube_id" in hits_f.dtype.names):
+                    tubes = hits_f["tube_id"].astype(np.int32)
+                    t_digi = np.array([dmap.get(int(tu), np.nan) for tu in tubes], dtype=np.float32)
+                else:
+                    t_digi = np.full_like(t_true, np.nan, dtype=np.float32)
+
+                if self.true_charge_only_if_true_time_ge_digi_time:
+                    have = np.isfinite(t_digi)
+                    mask = (~have) | (t_true >= t_digi)
+                    q = q * mask.astype(np.float32)
+
+                if self.use_digit_time:
+                    t = t_digi.copy()
+                    miss = ~np.isfinite(t)
+                    if np.any(miss):
+                        t[miss] = t_true[miss]
+                else:
+                    t = t_true
+            else:
+                t = t_true
 
             if xyz.shape[0] == 0:
                 continue
@@ -514,7 +565,6 @@ class _BaseSparseDataset(Dataset):
             )
             feats3, extra3 = self._voxelize_spconv_3d(xyz, q, t, parent_ids=pid_hits)
 
-            # apply voxel-level PE threshold for stats
             if self.min_charge > 0.0 and feats3.shape[0] > 0:
                 mv = feats3[:, 0] >= self.min_charge
                 feats3 = feats3[mv]
@@ -542,22 +592,46 @@ class _BaseSparseDataset(Dataset):
 
 class HyperKSparseCNN3D(_BaseSparseDataset):
     def __getitem__(self, i: int) -> Dict[str, Any]:
+        if self.cache_in_ram and i in self._cache:
+            return self._cache[i]
+
         fidx, eidx = self._index[int(i)]
         f = self._handlers[fidx]
         path = self.files[fidx]
         hits, parts = self._read_event(f, eidx)
 
         if len(hits) > 0:
-            # 1) keep only 'digihit-time' true hits: earliest per tube
-            # m_digi = self._select_digihit_hits(hits)
-            # hits_f = hits[m_digi]
             hits_f = hits
 
             if len(hits_f) > 0:
                 xyz = np.stack([hits_f["x"], hits_f["y"], hits_f["z"]],
                                axis=1).astype(np.float32)
-                t = hits_f["time_ns"].astype(np.float32)
+                t_true = hits_f["time_ns"].astype(np.float32)
                 q = hits_f["charge_pe"].astype(np.float32)
+
+                if self.use_digit_time or self.true_charge_only_if_true_time_ge_digi_time:
+                    digi_hits = self._read_digi_event(f, eidx)
+                    dmap = self._tube_to_min_digi_time(digi_hits)
+                    if dmap and ("tube_id" in hits_f.dtype.names):
+                        tubes = hits_f["tube_id"].astype(np.int32)
+                        t_digi = np.array([dmap.get(int(tu), np.nan) for tu in tubes], dtype=np.float32)
+                    else:
+                        t_digi = np.full_like(t_true, np.nan, dtype=np.float32)
+
+                    if self.true_charge_only_if_true_time_ge_digi_time:
+                        have = np.isfinite(t_digi)
+                        mask = (~have) | (t_true >= t_digi)
+                        q = q * mask.astype(np.float32)
+
+                    if self.use_digit_time:
+                        t = t_digi.copy()
+                        miss = ~np.isfinite(t)
+                        if np.any(miss):
+                            t[miss] = t_true[miss]
+                    else:
+                        t = t_true
+                else:
+                    t = t_true
             else:
                 xyz = np.zeros((0, 3), dtype=np.float32)
                 t = np.zeros((0,), dtype=np.float32)
@@ -573,6 +647,7 @@ class HyperKSparseCNN3D(_BaseSparseDataset):
                 voxel_parent = torch.zeros((0,), dtype=torch.long)
                 voxel_parent_frac = torch.zeros((0, self.max_parents + 1),
                                                 dtype=torch.float32)
+                voxel_charge_pe = torch.zeros((0,), dtype=torch.float32)
                 top_pdgs, top_tids, top_info = [0] * self.max_parents, [], []
                 extra3: Dict[str, Any] = {}
             else:
@@ -599,6 +674,7 @@ class HyperKSparseCNN3D(_BaseSparseDataset):
                     voxel_parent = torch.zeros((0,), dtype=torch.long)
                     voxel_parent_frac = torch.zeros((0, self.max_parents + 1),
                                                     dtype=torch.float32)
+                    voxel_charge_pe = torch.zeros((0,), dtype=torch.float32)
                 else:
                     centers = self._voxel_centers(coords_zyx)
                     charge = feats3[:, 0:1]
@@ -607,6 +683,9 @@ class HyperKSparseCNN3D(_BaseSparseDataset):
                         [charge, centers, t_mean], axis=1
                     ).astype(np.float32)
                     _nan_to_num_(feats_np)
+
+                    raw_charge_pe_np = feats_np[:, 0].copy()
+
                     feats_np = self._apply_norm(feats_np)
 
                     b = np.zeros((coords_zyx.shape[0], 1), dtype=np.int32)
@@ -614,11 +693,12 @@ class HyperKSparseCNN3D(_BaseSparseDataset):
                     coords = torch.from_numpy(_safe_i32(coords_np))
                     feats = torch.from_numpy(_safe_f32(feats_np))
 
+                    voxel_charge_pe = torch.from_numpy(_safe_f32(raw_charge_pe_np)).view(-1)
+
                     voxel_parent = torch.from_numpy(
                         voxel_parent_np.astype(np.int64)
                     ).to(torch.long)
 
-                    # pad / trim fractions to (max_parents+1)
                     G_full = self.max_parents + 1
                     frac_np = frac_np.astype(np.float32)
                     if frac_np.shape[1] < G_full:
@@ -636,6 +716,7 @@ class HyperKSparseCNN3D(_BaseSparseDataset):
             voxel_parent = torch.zeros((0,), dtype=torch.long)
             voxel_parent_frac = torch.zeros((0, self.max_parents + 1),
                                             dtype=torch.float32)
+            voxel_charge_pe = torch.zeros((0,), dtype=torch.float32)
             top_pdgs, top_tids, top_info = [0] * self.max_parents, [], []
             extra3 = {}
 
@@ -655,11 +736,13 @@ class HyperKSparseCNN3D(_BaseSparseDataset):
                 extra3.get("voxel_parent_conflicts", 0)
             ) if len(hits) > 0 else 0,
             "voxel_parent_frac": voxel_parent_frac,
+            "voxel_charge_pe": voxel_charge_pe,
             "parent_pdgs": top_pdgs,
             "parent_track_ids": top_tids,
             "parent_info": top_info,
             "max_parents": self.max_parents,
         }
-        return {"coords": coords, "feats": feats, "meta": meta}
-
-
+        sample = {"coords": coords, "feats": feats, "meta": meta}
+        if self.cache_in_ram:
+            self._cache[i] = sample
+        return sample

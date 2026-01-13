@@ -2,7 +2,8 @@ from __future__ import annotations
 from typing import Dict, Any, List, Tuple
 import torch
 import torch.nn as nn
-
+import os
+from spconv.core import ConvAlgo
 import spconv.pytorch as spconv
 from spconv.pytorch import (
     SparseConvTensor,
@@ -24,10 +25,21 @@ class BNAct1d(nn.Module):
 class SubMBlock(nn.Module):
     def __init__(self, c_in: int, c_out: int, key: str):
         super().__init__()
-        self.c1 = SubMConv3d(c_in, c_out, 3, bias=False, indice_key=key)
+        self.c1 = SubMConv3d(
+            c_in, c_out, 3,
+            bias=False,
+            indice_key=key,
+            algo=ConvAlgo.Native,  
+        )
         self.n1 = BNAct1d(c_out)
-        self.c2 = SubMConv3d(c_out, c_out, 3, bias=False, indice_key=key)
+        self.c2 = SubMConv3d(
+            c_out, c_out, 3,
+            bias=False,
+            indice_key=key,
+            algo=ConvAlgo.Native,  
+        )
         self.n2 = BNAct1d(c_out)
+
     def forward(self, x: SparseConvTensor) -> SparseConvTensor:
         y = self.c1(x)
         y = y.replace_feature(self.n1(y.features))
@@ -39,24 +51,42 @@ class SubMBlock(nn.Module):
 class Down(nn.Module):
     def __init__(self, c_in: int, c_out: int, key: str):
         super().__init__()
-        self.conv = SparseConv3d(c_in, c_out, 2, stride=2, bias=False, indice_key=key)
+        self.conv = SparseConv3d(
+            c_in, c_out, 2,
+            stride=2,
+            bias=False,
+            indice_key=key,
+            algo=ConvAlgo.Native,   # <--- IMPORTANT
+        )
         self.n = BNAct1d(c_out)
+
     def forward(self, x: SparseConvTensor) -> SparseConvTensor:
         y = self.conv(x)
         return y.replace_feature(self.n(y.features))
 
-
 class Up(nn.Module):
     def __init__(self, c_in: int, c_skip: int, c_out: int, key_down: str, key_up: str):
         super().__init__()
-        self.deconv = SparseInverseConv3d(c_in, c_out, 2, indice_key=key_down, bias=False)
+        self.deconv = SparseInverseConv3d(
+            c_in, c_out, 2,
+            indice_key=key_down,
+            bias=False,
+            algo=ConvAlgo.Native,     # <--- IMPORTANT
+        )
         self.n = BNAct1d(c_out)
-        self.fuse = SubMConv3d(c_out + c_skip, c_out, 1, bias=False, indice_key=key_up)
+        self.fuse = SubMConv3d(
+            c_out + c_skip, c_out, 1,
+            bias=False,
+            indice_key=key_up,
+            algo=ConvAlgo.Native,     
+        )
+
     def forward(self, x: SparseConvTensor, skip: SparseConvTensor) -> SparseConvTensor:
         y = self.deconv(x)
         y = y.replace_feature(self.n(y.features))
         y = y.replace_feature(torch.cat([y.features, skip.features], 1))
         return self.fuse(y)
+
 
 
 class SparseUNet3D(nn.Module):
@@ -127,13 +157,21 @@ class SparseUNet3D(nn.Module):
         return torch.stack([comp.int(), zyx[:, 0], zyx[:, 1], zyx[:, 2]], 1), comps_per_event
 
     @staticmethod
-    def _build_sparse(feats: torch.Tensor, coords4: torch.Tensor, grid: Tuple[int, int, int]) -> SparseConvTensor:
+    def _build_sparse(feats: torch.Tensor,
+                      coords4: torch.Tensor,
+                      grid: Tuple[int, int, int]) -> SparseConvTensor:
+        feats = feats.contiguous()
+        coords4 = coords4.contiguous().to(feats.device, non_blocking=True).int()
+
+        batch_size = int(coords4[:, 0].max().item()) + 1 if coords4.numel() else 0
+
         return spconv.SparseConvTensor(
             features=feats,
-            indices=coords4.int(),
+            indices=coords4,
             spatial_shape=torch.Size(list(grid)),
-            batch_size=int(coords4[:, 0].max().item()) + 1,
+            batch_size=batch_size,
         )
+
 
     @staticmethod
     def _regroup(x: torch.Tensor, comp_idx: torch.Tensor, groups: List[List[int]]) -> List[torch.Tensor]:

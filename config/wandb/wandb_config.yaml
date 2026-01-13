@@ -1,7 +1,7 @@
 
 
 entity: mathieu-ferey-laboratoire-leprince-ringuet
-project: WCTE_eVSmu_class_WCTE_uni_iso_v2
+project: Multiring-Segmentation-SparseUNet
 
 tags: 
   - e/mu 100k

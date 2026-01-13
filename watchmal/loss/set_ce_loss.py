@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Dict, Any, List, Tuple
 import torch
 import torch.nn.functional as F
+from scipy.optimize import linear_sum_assignment
 
 
 def dice_coeff(prob: torch.Tensor, target_bin: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
@@ -24,7 +25,10 @@ def smallK_match(cost: torch.Tensor) -> List[int]:
 
 
 def _stable_probs(pi: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
-    pi = torch.nan_to_num(pi, nan=0.0, posinf=1.0, neginf=0.0)
+
+    if not torch.isfinite(pi).all():
+        raise RuntimeError("Non-finite values detected in probability/target tensor (NaN/Inf).")
+
     pi = pi.clamp(0.0, 1.0)
     row_sum = pi.sum(dim=1, keepdim=True).clamp_min(eps)
     return pi / row_sum
@@ -47,23 +51,27 @@ def nll_with_label_smoothing(logp: torch.Tensor,
 
 
 def loss_set_ce_dice(lambda_dice: float = 2.0,
-                     label_smoothing: float = 0.05,
+                     label_smoothing: float = 0.01,
                      eps: float = 1e-6,
-                     poisson: bool = True):
+                     poisson: bool = False,
+                     matching: str = "none"):
 
     def _loss(batch: Dict[str, Any], out: Dict[str, Any]) -> Dict[str, torch.Tensor]:
-        if "Pi_list" not in out:
-            raise KeyError("Expected out['Pi_list'] = list of [V_b, C] probabilities per batch element.")
-
-        Pi_list: List[torch.Tensor] = out["Pi_list"]
-        device = Pi_list[0].device if len(Pi_list) > 0 else "cpu"
+        if "Z_list" in out:
+            Z_list: List[torch.Tensor] = out["Z_list"]
+            device = Z_list[0].device if len(Z_list) > 0 else "cpu"
+        elif "Pi_list" in out:
+            # Fallback (kept for compatibility), but less stable.
+            Pi_list: List[torch.Tensor] = out["Pi_list"]
+            device = Pi_list[0].device if len(Pi_list) > 0 else "cpu"
+        else:
+            raise KeyError("Expected out['Z_list'] (preferred) or out['Pi_list'].")
 
         coords_all = batch.get("coords", None)
         feats_all = batch.get("feats", None)
         if poisson:
             if not isinstance(coords_all, torch.Tensor) or not isinstance(feats_all, torch.Tensor):
                 raise KeyError("Poisson weighting requires batch['coords'] and batch['feats'].")
-
             coords_all = coords_all.to(device)
             feats_all = feats_all.to(device)
 
@@ -71,15 +79,25 @@ def loss_set_ce_dice(lambda_dice: float = 2.0,
         dice_sum = torch.tensor(0.0, device=device)
         total_weight = 0.0
         total_vox = 0
-        B = len(Pi_list)
+        B = len(out["Z_list"]) if "Z_list" in out else len(out["Pi_list"])
 
         for b in range(B):
-            Pi_b = Pi_list[b]
-            if Pi_b.numel() == 0:
-                continue
+            if "Z_list" in out:
+                Z_b = out["Z_list"][b]
+                if Z_b.numel() == 0:
+                    continue
 
-            Pi_b = _stable_probs(Pi_b, eps=eps)
-            logPi_b = Pi_b.clamp_min(eps).log()
+                if not torch.isfinite(Z_b).all():
+                    raise RuntimeError("Non-finite logits detected in Z_b (NaN/Inf).")
+                logPi_b = F.log_softmax(Z_b, dim=1)
+                Pi_b = logPi_b.exp()
+            else:
+                Pi_b = out["Pi_list"][b]
+                if Pi_b.numel() == 0:
+                    continue
+
+                Pi_b = _stable_probs(Pi_b, eps=eps)
+                logPi_b = (Pi_b + eps).log()
 
             meta_b = batch["meta"][b]
             if "voxel_parent_frac" not in meta_b:
@@ -101,14 +119,49 @@ def loss_set_ce_dice(lambda_dice: float = 2.0,
                 y_b = y_b[:, :C]
 
             y_b = _stable_probs(y_b, eps=eps)
+
+            if matching != "none" and C > 1:
+                cost = torch.empty((C - 1, C - 1), device=Pi_b.device, dtype=torch.float32)
+                for ip in range(1, C):
+                    pc = Pi_b[:, ip]
+                    for ig in range(1, C):
+                        cost[ip - 1, ig - 1] = 1.0 - dice_coeff(pc, y_b[:, ig], eps=eps)
+
+                if matching == "min":
+                    assign = smallK_match(cost)  # assign[gt] = pred
+                    perm_inv = [-1] * (C - 1)     # perm_inv[pred] = gt
+                    for gt_idx, pred_idx in enumerate(assign):
+                        if 0 <= pred_idx < (C - 1):
+                            perm_inv[pred_idx] = gt_idx
+                    for pred_idx in range(C - 1):
+                        if perm_inv[pred_idx] < 0:
+                            perm_inv[pred_idx] = pred_idx
+                    perm = torch.as_tensor(perm_inv, device=y_b.device, dtype=torch.long)
+                    y_b = torch.cat([y_b[:, :1], y_b[:, 1:][:, perm]], dim=1)
+
+                elif matching == "hungarian":
+                    row_ind, col_ind = linear_sum_assignment(cost.detach().cpu().numpy())  # pred row -> gt col
+                    perm = torch.as_tensor(col_ind, device=y_b.device, dtype=torch.long)
+                    y_b = torch.cat([y_b[:, :1], y_b[:, 1:][:, perm]], dim=1)
+
+                else:
+                    raise ValueError("matching must be one of: 'none', 'min', 'hungarian'")
+
             ce_vec = -(y_b * logPi_b).sum(dim=1)
 
             if poisson:
                 mask_b = (coords_all[:, 0] == b)
                 if int(mask_b.sum().item()) != V_b:
-                    raise ValueError(f"Poisson mode: coords mask for batch {b} has {int(mask_b.sum().item())} voxels, "
-                                     f"but Pi_list[{b}] has {V_b}.")
-                w_v = feats_all[mask_b, 0].float().clamp_min(eps)
+                    raise ValueError(
+                        f"Poisson mode: coords mask for batch {b} has {int(mask_b.sum().item())} voxels, "
+                        f"but current event has {V_b} voxels."
+                    )
+
+                w_v = feats_all[mask_b, 0].float()
+                w_v = w_v.clamp_min(0.0)
+                w_v = w_v.clamp_max(10.0)
+                w_v = w_v.clamp_min(eps)
+
                 ce_sum = ce_sum + (w_v * ce_vec).sum()
                 total_weight += float(w_v.sum().item())
             else:
@@ -120,6 +173,9 @@ def loss_set_ce_dice(lambda_dice: float = 2.0,
                 for c in range(1, C):
                     pc = Pi_b[:, c]
                     tc = y_b[:, c]
+                    if float(tc.sum().item()) < eps:
+                        continue
+
                     dsum += (1.0 - dice_coeff(pc, tc, eps=eps))
                 dice_sum = dice_sum + dsum
 

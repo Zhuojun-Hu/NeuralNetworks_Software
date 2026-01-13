@@ -69,7 +69,7 @@ def build_model(model_config, device, use_ddp=False):
         model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
 
         # Wrap the model with DistributedDataParallel mode
-        model = DDP(model, device_ids=[device])
+        model = DDP(model, device_ids=[device], find_unused_parameters=True)
 
     return model, nb_parameters
 
